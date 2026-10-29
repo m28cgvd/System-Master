@@ -1,0 +1,295 @@
+<script>
+/* =====================================================================
+   Approvals — one section for every approval step of this login
+   ===================================================================== */
+var APPR_STEPS = {
+  advance: [['', 'All pending'], ['incharge', 'Pending with Outlet Incharge'], ['hr', 'Pending with HR'], ['me', 'Waiting for me'], ['admin', 'Pending with Director'], ['pay', 'Pending with Operations Manager'], ['resend', 'Rejected by Director']],
+  leave: [['', 'All pending'], ['incharge', 'Pending with Outlet Incharge'], ['hr', 'Pending with HR'], ['me', 'Waiting for me']],
+  reimb: [['', 'All pending'], ['me', 'Waiting for me']],
+  emp: [['', 'All pending'], ['hrexec', 'Pending with HR Executive'], ['mis', 'Pending with MIS / Director'], ['me', 'Waiting for me']],
+  join: [['', 'All pending'], ['hr', 'Pending with HR'], ['hrexec', 'Pending with HR Executive'], ['mis', 'Pending with MIS / Director'], ['me', 'Waiting for me']]
+};
+var APPR_ICON = { advance: 'payments', leave: 'event_busy', reimb: 'request_quote', emp: 'manage_accounts', join: 'how_to_reg', item: 'category' };
+
+V.approvals = function (el, p) {
+  el.innerHTML = pageHead('Approvals', '', '<button class="btn sm ghost" id="apR">' + icon('sync') + 'Refresh</button>') + '<div id="apB">' + loadingHtml() + '</div>';
+  apprBoard($('#apB', el), p, { refresh: $('#apR', el) });
+};
+function apprBoard(B, p, o) {
+  o = o || {};
+  var H = null, only = o.only || '', cat = only || p.card || '', f = null, nav = S.nav, args = only ? { only: only } : {}, badge = only ? 'employees' : 'approvals';
+  B.innerHTML = loadingHtml();
+  function alive() { return S.nav === nav && document.body.contains(B); }
+  function load(force) {
+    var q = force ? api('appr.hub', Object.assign({ force: true }, args)).then(function (d) { dcSet(dcKey('appr.hub', args), d); return d; }) : null;
+    if (q) return q.then(take).catch(function (e) { toast(e.message, 'bad'); });
+    return live('appr.hub', args, take, { alive: alive }).catch(function (e) { if (!H) B.innerHTML = errHtml(e); });
+  }
+  function take(d) { H = d; setBadge(badge, d.total); if (!f || f.month !== d.month) f = { month: d.month, from: only ? '2020-01-01' : d.monthStart, to: only ? '2099-12-31' : d.monthEnd || d.today, loc: '', step: p.step || '', q: '' }; paint(); }
+  if (o.refresh) o.refresh.onclick = function () { var b = this; tk.T = null; dcDel('appr.track', {}); busy(b, true); load(true).then(function () { busy(b, false); }); };
+  function leave() { if (only && o.back) return o.back(); cat = ''; delete S.params.card; paint(); }
+
+  function paint() {
+    if (cat === 'track' && H.track) return track();
+    if (cat && H.cards.some(function (c) { return c.key === cat; })) return detail();
+    if (only) { B.innerHTML = '<div class="card">' + emptyHtml('lock', 'Approving new joinings is not given to your login.') + '</div>'; return; }
+    cat = '';
+    if (!H.cards.length && !H.track) { B.innerHTML = '<div class="card">' + emptyHtml('lock', 'No approval step is given to your login.') + '</div>'; return; }
+    B.innerHTML = (H.errors.length ? '<div class="warn mb">' + h(H.errors.join(' · ')) + '</div>' : '') +
+      '<div class="hcards">' + H.cards.map(function (c) {
+        var monthly = c.key === 'advance' || c.key === 'leave' || c.key === 'reimb';
+        return '<button class="hcard" data-c="' + c.key + '"><span class="hc-top">' + icon(APPR_ICON[c.key]) + h(c.label) + '</span>' +
+          '<span class="hc-v">' + c.all + '</span><span class="hc-s">pending' + (monthly ? ' · ' + h(H.month) : '') + '</span></button>';
+      }).join('') + (H.track ? '<button class="hcard" data-c="track"><span class="hc-top">' + icon('timeline') + 'Tracking</span><span class="hc-v">' + icon('chevron_right') + '</span><span class="hc-s">' +
+        [H.track.advance ? 'Advance' : '', H.track.leave ? 'Leave' : '', H.track.reimb ? 'Reimbursement' : ''].filter(Boolean).join(' · ') + ' · ' + h(H.month) + '</span></button>' : '') + '</div>';
+    $$('[data-c]', B).forEach(function (b) { b.onclick = function () { cat = b.dataset.c; f.step = p.step || ''; S.params.card = cat; paint(); }; });
+  }
+
+  var tk = { kind: p.kind || '', show: '', loc: '', q: '', T: null };
+  function forMe(x) { return x.forMe === undefined ? !!x.canDecide : !!x.forMe; }
+  function track() { trackPanel(B, tk, function () { cat = ''; delete S.params.card; paint(); }); }
+
+  function list() {
+    return H.items[cat].filter(function (x) {
+      if (f.step === 'me' && !forMe(x)) return false;
+      if (x.dateKey && (x.dateKey < f.from || x.dateKey > f.to)) return false;
+      if (f.loc && x.location !== f.loc) return false;
+      if (f.step && f.step !== 'me' && x.step !== f.step) return false;
+      if (f.q && (x.name + ' ' + x.empId + ' ' + x.line + ' ' + x.designation).toLowerCase().indexOf(f.q) < 0) return false;
+      return true;
+    }).sort(function (a, b) { return (b.dateKey || '').localeCompare(a.dateKey || ''); });
+  }
+  function detail() {
+    var c = H.cards.filter(function (x) { return x.key === cat; })[0], steps = (APPR_STEPS[cat] || [['', 'Every step']]).filter(function (s0) {
+      return !(S.boot.perms.director && (s0[0] === 'admin' || (s0[0] === 'me' && (cat === 'leave' || cat === 'reimb'))));
+    });
+    var monthly = cat === 'advance' || cat === 'leave' || cat === 'reimb', rng = monthly ? ' min="' + h(H.monthStart) + '" max="' + h(H.monthEnd) + '"' : '', dated = !only;
+    if (monthly && (f.from < H.monthStart || f.from > H.monthEnd)) f.from = H.monthStart;
+    if (monthly && (f.to > H.monthEnd || f.to < H.monthStart)) f.to = H.monthEnd;
+    var locs = H.items[cat].map(function (x) { return x.location; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; }).sort();
+    B.innerHTML = '<div class="crumb"><button class="btn sm ghost" id="apBack">' + icon('arrow_back') + (only ? 'Employees' : 'Approvals') + '</button><b>' + icon(APPR_ICON[cat]) + ' ' + h(only ? 'New joining approvals' : c.label) + '</b>' +
+      (only ? '<span class="grow"></span><button class="btn sm ghost" id="apRf">' + icon('sync') + 'Refresh</button>' : '') + '</div>' +
+      '<div class="fbar">' + (dated ? '<div class="ff"><label>From</label><input type="date" class="inp sm" id="fF" value="' + h(f.from) + '"' + rng + '></div>' +
+      '<div class="ff"><label>To</label><input type="date" class="inp sm" id="fT" value="' + h(f.to) + '"' + rng + '></div>' : '') +
+      (locs.length > 1 ? '<div class="ff"><label>Location</label><select class="inp sm" id="fL"><option value="">All</option>' + locs.map(function (l) { return '<option' + (l === f.loc ? ' selected' : '') + '>' + h(l) + '</option>'; }).join('') + '</select></div>' : '') +
+      (steps.length > 1 ? '<div class="ff"><label>Filter By</label><select class="inp sm" id="fS">' + steps.map(function (s0) { return '<option value="' + s0[0] + '"' + (s0[0] === f.step ? ' selected' : '') + '>' + h(s0[1]) + '</option>'; }).join('') + '</select></div>' : '') +
+      '<div class="ff grow"><label>Search</label><input class="inp sm" id="fQ" placeholder="Name, ID…" value="' + h(f.q) + '"></div></div>' +
+      '<div id="apL"></div><div id="apBulk"></div>';
+    $('#apBack', B).onclick = leave;
+    if ($('#apRf', B)) $('#apRf', B).onclick = function () { var b = this; busy(b, true); load(true).then(function () { busy(b, false); }); };
+    if ($('#fF', B)) $('#fF', B).onchange = function () { f.from = this.value || H.monthStart; rows(); };
+    if ($('#fT', B)) $('#fT', B).onchange = function () { f.to = this.value || H.monthEnd; rows(); };
+    if ($('#fL', B)) $('#fL', B).onchange = function () { f.loc = this.value; rows(); };
+    if ($('#fS', B)) $('#fS', B).onchange = function () { f.step = this.value; rows(); };
+    $('#fQ', B).oninput = debounce(function () { f.q = val('#fQ', B).toLowerCase(); rows(); }, 200);
+    rows();
+  }
+
+  function rows() {
+    var L = list(), box = $('#apL', B);
+    if (!L.length) {
+      box.innerHTML = '<div class="card">' + emptyHtml('task_alt', 'Nothing in this view.') + '</div>';
+      bulkBar(); return;
+    }
+    var any = L.some(function (x) { return x.canDecide; });
+    box.innerHTML = '<div class="row small muted mb"><label class="check"' + (any ? '' : ' style="visibility:hidden"') + '><input type="checkbox" id="apAll"> Select all</label><span class="grow"></span><span>' + L.length + ' record' + (L.length === 1 ? '' : 's') +
+      '</span></div><div class="recs">' + L.map(function (x, i) {
+        return '<div class="rec' + (x.canDecide ? '' : ' nock') + '" data-i="' + i + '"><div class="rec-h">' + (x.canDecide ? '<input type="checkbox" class="rc" data-ck="' + i + '">' : '') +
+          '<div class="rm"><b>' + h(x.name || '—') + '</b><span class="tiny muted">' + h([x.empId, x.location].filter(Boolean).join(' · ') + (x.line ? ' · ' + x.line : '')) + '</span></div>' +
+          '<div class="rr"><span class="tiny muted hide-m nowrap">' + h(x.dateText || '') + '</span>' + chip(x.stepText, x.canDecide ? 'orange' : 'grey') + icon('expand_more', 'rx') + '</div></div>' +
+          '<div class="rec-b"></div></div>';
+      }).join('') + '</div>';
+    $$('.rec', box).forEach(function (r) {
+      var x = L[+r.dataset.i];
+      $('.rec-h', r).onclick = function (e) {
+        if (e.target.classList.contains('rc')) return;
+        var open = r.classList.toggle('open');
+        if (open && !r.dataset.built) { r.dataset.built = 1; body(r, x); }
+      };
+    });
+    $$('[data-ck]', box).forEach(function (c) { c.onchange = bulkBar; });
+    if ($('#apAll', box)) $('#apAll', box).onchange = function () { var on = this.checked; $$('[data-ck]', box).forEach(function (c) { c.checked = on; }); bulkBar(); };
+    box.L = L;
+    bulkBar();
+  }
+
+  function body(r, x) {
+    var b = $('.rec-b', r), inp = x.inputs || {}, fields = '';
+    if (x.canDecide) {
+      if (x.route === 'adv.decide') fields = num('max', 'Max allowed (₹)', inp.max) + num('amount', 'Approve amount (₹)', inp.amount);
+      else if (x.route === 'appr.advHr') fields = num('days', 'Actual present days', inp.days) + '<div class="field"><label>Eligible · max</label><div class="inp sm" data-max style="display:flex;align-items:center;background:#FBF6EE">—</div></div>' + num('amount', 'Approve amount (₹)', inp.amount);
+      else if (x.route === 'appr.advAdmin' || x.route === 'appr.advResend') fields = num('amount', 'Amount (₹)', inp.amount);
+      else if (x.needsLocation) fields = '<div class="field"><label>Location *</label><select class="inp sm" data-k="location"><option value="">Pick…</option>' +
+        ((H.meta && H.meta.locations) || []).map(function (l) { return '<option' + (l === x.location ? ' selected' : '') + '>' + h(l) + '</option>'; }).join('') + '</select></div>';
+      if (x.cat === 'leave') fields += '<div class="field"><label>Replacement</label><select class="inp sm" data-k="replacementId"><option value="">—</option></select></div>';
+    }
+    b.innerHTML = '<div class="kv">' + (x.kv || []).map(function (kv) { return '<b>' + h(kv[0]) + '</b><span>' + h(kv[1] === undefined || kv[1] === '' ? '—' : kv[1]) + '</span>'; }).join('') + '</div>' +
+      (x.bill || x.docs ? '<div class="row gap6 mb">' + (x.bill ? '<button class="btn sm soft" data-bill>' + icon('receipt') + 'Bill</button>' : '') +
+        Array.from({ length: x.docs || 0 }, function (_, k) { return '<button class="btn sm ghost" data-doc="' + k + '">' + icon('attach_file') + 'Document ' + (k + 1) + '</button>'; }).join('') + '</div>' : '') +
+      ((x.links || []).length ? '<div class="row gap6 mb" style="flex-wrap:wrap">' + x.links.map(function (l, k) { return '<button class="btn sm ghost" data-lk="' + k + '">' + icon('visibility') + h(l.label) + '</button>'; }).join('') + '</div>' : '') +
+      (x.canDecide ? '<div class="form-grid">' + fields + '<div class="field full"><label>Remarks</label><input class="inp sm" data-k="remarks" placeholder="Needed to reject"></div></div>' +
+        '<div class="row gap6"><span class="grow"></span>' + (x.noReject ? '' : '<button class="btn sm red" data-act="REJECTED">' + icon('close') + 'Reject</button>') +
+        '<button class="btn sm green" data-act="APPROVED">' + icon('check') + h(x.approveText || 'Approve') + '</button></div>'
+        : '<div class="small muted">' + h(x.mine ? 'Your own request — someone else approves it.' : x.stepText + '.') + '</div>');
+    function num(k, label, v) { return '<div class="field"><label>' + h(label) + '</label><input class="inp sm" inputmode="numeric" data-k="' + k + '" value="' + h(v === undefined ? '' : v) + '"></div>'; }
+    if ($('[data-bill]', b)) $('[data-bill]', b).onclick = function () { openFileApi('req.file', Object.assign({}, x.ref, { which: 'bill' }), 'Bill · ' + x.name); };
+    $$('[data-doc]', b).forEach(function (d0) { d0.onclick = function () { openFileApi('req.file', Object.assign({}, x.ref, { which: 'doc', i: +d0.dataset.doc }), 'Document · ' + x.name); }; });
+    $$('[data-lk]', b).forEach(function (l0) { l0.onclick = function () { var l = x.links[+l0.dataset.lk]; viewFile(l.module, l.id, l.label + ' · ' + x.name); }; });
+    if (x.route === 'appr.advHr' && x.canDecide) {
+      var dI = $('[data-k=days]', b), mx = $('[data-max]', b), prev = function () {
+        api('appr.hrPreview', Object.assign({}, x.ref, { days: dI.value })).then(function (m) { mx.innerHTML = money(m.eligible) + ' · <b>' + money(m.max) + '</b> <span class="tiny muted">(' + m.days + ' d)</span>'; }).catch(function () {});
+      };
+      dI.onchange = prev; prev();
+    }
+    if (x.cat === 'leave' && x.canDecide) {
+      api('appr.staff', { empId: x.empId }).then(function (s0) {
+        $('[data-k=replacementId]', b).innerHTML = '<option value="">—</option>' + s0.staff.map(function (m) { return '<option value="' + h(m.id) + '">' + h(m.name + ' · ' + m.designation) + '</option>'; }).join('');
+      }).catch(function () {});
+    }
+    $$('[data-act]', b).forEach(function (bt) {
+      bt.onclick = function () {
+        var g = function (k) { var e = $('[data-k="' + k + '"]', b); return e ? e.value.trim() : ''; };
+        var v = { remarks: g('remarks'), max: g('max'), amount: g('amount'), days: g('days'), location: g('location'), replacementId: g('replacementId') };
+        if (bt.dataset.act === 'REJECTED' && !v.remarks) return toast('Write why you are rejecting it.', 'bad');
+        if (x.needsLocation && bt.dataset.act === 'APPROVED' && !v.location) return toast('Pick the location first.', 'bad');
+        busy(bt, true);
+        decide(x, bt.dataset.act, v).then(function (res) { toast(res.message || 'Saved.', 'ok'); gone([x]); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+      };
+    });
+  }
+
+  function decide(x, dec, v) {
+    var R = Object.assign({}, x.ref), rejectRoute = x.rejectRoute && dec === 'REJECTED';
+    if (x.route === 'appr.advPay') return api('appr.advPay', { items: [R], remarks: v.remarks });
+    if (x.route === 'emp.changeDecide') return api('emp.changeDecide', { id: R.id, decision: dec, remarks: v.remarks });
+    if (x.route === 'emp.approve') return dec === 'APPROVED' ? api('emp.approve', Object.assign(R, { location: v.location || x.location })) : api('emp.reject', Object.assign(R, { remarks: v.remarks }));
+    if (x.route === 'appr.advResend') return rejectRoute ? api('appr.advClose', Object.assign(R, { remarks: v.remarks })) : api('appr.advResend', Object.assign(R, { amount: v.amount || (x.inputs || {}).amount, remarks: v.remarks }));
+    var d = Object.assign(R, { decision: dec, remarks: v.remarks });
+    if (x.route === 'adv.decide') { d.maxAllowed = v.max || (x.inputs || {}).max; d.amount = v.amount || (x.inputs || {}).amount; }
+    if (x.route === 'appr.advHr') { d.actualDays = v.days || (x.inputs || {}).days; d.amount = v.amount || (x.inputs || {}).amount; }
+    if (x.route === 'appr.advAdmin') d.amount = v.amount || (x.inputs || {}).amount;
+    if (v.replacementId) d.replacementId = v.replacementId;
+    return api(x.route, d);
+  }
+
+  function gone(done) {
+    done.forEach(function (x) { var L = H.items[x.cat], i = L.indexOf(x); if (i >= 0) L.splice(i, 1); });
+    H.cards.forEach(function (c) { var L = H.items[c.key].filter(forMe); c.total = L.length; });
+    H.total = H.cards.reduce(function (s0, c) { return s0 + c.total; }, 0);
+    setBadge(badge, H.total);
+    dcDel('appr.hub', args); dcDel('dash.load', { parts: ['home'], outletId: S.outlet });
+    if (only) { delete S.cache.empStats; delete S.cache.empAll; }
+    rows();
+    setTimeout(function () { if (alive()) load(true); }, 1200);
+  }
+
+  function bulkBar() {
+    var box = $('#apL', B), bar = $('#apBulk', B); if (!box || !bar) return;
+    var L = box.L || [], sel = $$('[data-ck]', box).filter(function (c) { return c.checked; }).map(function (c) { return L[+c.dataset.ck]; });
+    if (!sel.length) { bar.innerHTML = ''; return; }
+    var noRej = sel.every(function (x) { return x.noReject; }), canRej = !sel.some(function (x) { return x.noReject; });
+    bar.innerHTML = '<div class="bulk"><b>' + sel.length + ' selected</b><input class="inp sm grow" id="bkR" placeholder="Remarks (needed to reject)" style="min-width:160px">' +
+      (canRej ? '<button class="btn sm red" data-bk="REJECTED">' + icon('close') + 'Reject</button>' : '') +
+      '<button class="btn sm green" data-bk="APPROVED">' + icon('check') + (noRej ? 'Paid' : 'Approve') + '</button></div>';
+    $$('[data-bk]', bar).forEach(function (bt) {
+      bt.onclick = function () {
+        var dec = bt.dataset.bk, rm = val('#bkR', bar);
+        if (dec === 'REJECTED' && !rm) return toast('Write why you are rejecting them.', 'bad');
+        var miss = sel.filter(function (x) { return dec === 'APPROVED' && x.needsLocation && !x.location; });
+        if (miss.length) return toast('Open ' + miss[0].name + ' and pick the location first.', 'bad');
+        confirmBox((dec === 'APPROVED' ? (noRej ? 'Mark ' : 'Approve ') : 'Reject ') + sel.length + ' request(s)?', 'Each one is saved with the amounts shown in its row.', dec === 'APPROVED' ? 'Yes' : 'Reject', dec !== 'APPROVED').then(function (ok) {
+          if (!ok) return;
+          busy(bt, true, 'Saving…');
+          var done = [], fail = [];
+          (function next(i) {
+            if (i >= sel.length) {
+              busy(bt, false);
+              toast(done.length + ' saved' + (fail.length ? ' · ' + fail.length + ' failed: ' + fail.slice(0, 2).join(' · ') : ''), fail.length ? 'bad' : 'ok');
+              return gone(done);
+            }
+            var x = sel[i];
+            decide(x, dec, { remarks: rm }).then(function () { done.push(x); }).catch(function (e) { fail.push(x.name + ' — ' + e.message); }).then(function () { next(i + 1); });
+          })(0);
+        });
+      };
+    });
+  }
+  load(false);
+}
+
+function trackPanel(B, tk, back) {
+  var T = tk.T;
+  var b = hubPanel(B, tk.kind ? { advance: 'Advance Tracking', leave: 'Leave Tracking', reimb: 'Reimbursement Tracking' }[tk.kind] : 'Tracking', tk.kind ? APPR_ICON[tk.kind] : 'timeline',
+    function () { if (tk.kind && !tk.fixed) { tk.kind = ''; tk.show = ''; tk.q = ''; return trackPanel(B, tk, back); } back(); });
+  if (!T) {
+    b.innerHTML = loadingHtml('Reading the requests…');
+    return live('appr.track', { back: tk.back || 0 }, function (d) { tk.T = d; if (document.body.contains(B)) trackPanel(B, tk, back); }, { alive: function () { return document.body.contains(B); } })
+      .catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  var head = (T.errors.length ? '<div class="warn mb">' + h(T.errors.join(' · ')) + '</div>' : '') +
+    '<div class="fbar"><div class="ff"><label>Month</label><select class="inp sm" id="trM">' + (T.months || [T.month]).map(function (m, i) { return '<option value="' + i + '"' + (i === (T.back || 0) ? ' selected' : '') + '>' + h(m) + '</option>'; }).join('') + '</select></div></div>';
+  function monthPick() {
+    var mp = $('#trM', b); if (!mp) return;
+    mp.onchange = function () { tk.back = Number(this.value) || 0; tk.T = null; tk.show = ''; trackPanel(B, tk, back); };
+  }
+  if (!tk.kind) {
+    b.innerHTML = head + '<div id="trC"></div>';
+    monthPick();
+    var cards = [];
+    [['advance', 'Advance Tracking'], ['leave', 'Leave Tracking'], ['reimb', 'Reimbursement Tracking']].forEach(function (k) {
+      var L = T[k[0]]; if (!L) return;
+      var open = L.filter(function (x) { return !x.done; }).length;
+      cards.push({ key: k[0], icon: APPR_ICON[k[0]], label: k[1], value: L.length, sub: h(T.month) + ' · ' + open + ' pending · ' + (L.length - open) + ' completed' });
+    });
+    hubCards($('#trC', b), cards, function (k) { tk.kind = k; trackPanel(B, tk, back); });
+    return;
+  }
+  var L = T[tk.kind] || [], locs = L.map(function (x) { return x.location; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; }).sort();
+  var waits = L.map(function (x) { return x.wait; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+  var amt = L.reduce(function (s0, x) { return s0 + (Number(x.amount) || 0); }, 0);
+  b.innerHTML = head + (amt ? '<div class="row mb">' + chip(L.length + ' in ' + T.month, 'blue') + chip('Asked ' + money(amt), 'grey') +
+      chip(L.filter(function (x) { return !x.done; }).length + ' pending', 'orange') + '</div>' : '') +
+    '<div class="fbar"><div class="ff"><label>Status</label><select class="inp sm" id="trS"><option value="">All (' + L.length + ')</option>' +
+    waits.map(function (w) { return '<option' + (w === tk.show ? ' selected' : '') + '>' + h(w) + '</option>'; }).join('') + '</select></div>' +
+    (T.all && locs.length > 1 ? '<div class="ff"><label>Location</label><select class="inp sm" id="trL"><option value="">All</option>' + locs.map(function (l) { return '<option' + (l === tk.loc ? ' selected' : '') + '>' + h(l) + '</option>'; }).join('') + '</select></div>' : '') +
+    '<div class="ff grow"><label>Search</label><input class="inp sm" id="trQ" placeholder="Name, ID…" value="' + h(tk.q) + '"></div></div><div id="trL0"></div>';
+  function rows() {
+    var R = L.filter(function (x) {
+      if (tk.show && x.wait !== tk.show) return false;
+      if (tk.loc && x.location !== tk.loc) return false;
+      if (tk.q && (x.name + ' ' + x.empId).toLowerCase().indexOf(tk.q) < 0) return false;
+      return true;
+    });
+    recList($('#trL0', b), R, {
+      title: function (x) { return h(x.name); },
+      sub: function (x) { return h([x.amount ? money(x.amount) : x.dates ? x.dates + ' · ' + x.days + 'd' : '', x.location, (x.applied || '').slice(0, 10)].filter(Boolean).join(' · ')); },
+      right: function (x) { return chip(x.wait, /^paid|^approved$/i.test(x.wait) ? 'green' : /reject/i.test(x.wait) ? 'red' : /operations manager/i.test(x.wait) ? 'blue' : 'orange'); },
+      body: function (el0, x) {
+        el0.innerHTML = kvHtml(x.flow.concat(x.remarks ? [['Remarks', x.remarks]] : [])) +
+          (x.canChange ? '<div class="row gap6 mt"><span class="grow"></span><button class="btn sm ' + (x.final === 'APPROVED' ? 'red' : 'green') + '" data-chg>' +
+            icon(x.final === 'APPROVED' ? 'close' : 'check') + (x.final === 'APPROVED' ? 'Change to rejected' : 'Change to approved') + '</button></div>' : '');
+        var cb = $('[data-chg]', el0);
+        if (cb) cb.onclick = function (e) {
+          e.stopPropagation();
+          var dec = x.final === 'APPROVED' ? 'REJECTED' : 'APPROVED';
+          modal({ title: (dec === 'APPROVED' ? 'Change to approved · ' : 'Change to rejected · ') + x.name, body: '<div class="small muted mb">' + h(x.dates + ' · ' + x.days + ' day(s)') + '</div>' +
+              '<div class="field"><label>Reason for the change *</label><textarea class="inp" data-k="rm" rows="3"></textarea></div>',
+            actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: dec === 'APPROVED' ? 'green' : 'red', click: function (close, m, btn) {
+              var rm = val('[data-k="rm"]', m); if (!rm) return toast('Write why the decision is changed.', 'bad');
+              busy(btn, true);
+              api('appr.leave', Object.assign({}, x.ref, { decision: dec, remarks: rm, change: true })).then(function (r) {
+                close(); toast(r.message, 'ok'); dcDel('appr.track', { back: tk.back || 0 }); tk.T = null; trackPanel(B, tk, back);
+              }).catch(function (er) { busy(btn, false); toast(er.message, 'bad'); });
+            } }] });
+        };
+      },
+      empty: 'Nothing here in ' + T.month + '.', emptyIcon: 'timeline'
+    });
+  }
+  monthPick();
+  $('#trS', b).onchange = function () { tk.show = this.value; rows(); };
+  if ($('#trL', b)) $('#trL', b).onchange = function () { tk.loc = this.value; rows(); };
+  $('#trQ', b).oninput = debounce(function () { tk.q = val('#trQ', b).toLowerCase(); rows(); }, 200);
+  rows();
+}
+</script>

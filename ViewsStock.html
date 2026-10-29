@@ -1,0 +1,772 @@
+<script>
+/* =====================================================================
+   Orders · GRN & Stock Register · Production · Daily Closing · Expenses · DSR
+   ===================================================================== */
+
+/* ---------------- ORDERS ---------------- */
+V.orders = function (el, p) {
+  el.innerHTML = pageHead('Orders', '') + '<div class="card">' + loadingHtml('Opening the order screen…') + '</div>';
+  loadBundle('ViewsOrder').then(function () { if (S.view === 'orders') oaMount(el, p || {}); })
+    .catch(function (e) { if (S.view === 'orders') el.innerHTML = pageHead('Orders') + errHtml(e); });
+};
+
+function vegOrder(b) {
+  b.innerHTML = loadingHtml();
+  cached('vegItems', function () { return api('veg.items'); }).then(function (items) {
+    var secs = {}; items.forEach(function (i) { (secs[i.section] = secs[i.section] || []).push(i); });
+    b.innerHTML = '<div class="card"><div class="form-grid">' + outletField('vOut', true) + '</div><div class="pill-note">Type the quantity only for what you need. The order PDF is emailed to the vegetable vendor list.</div></div>' +
+      Object.keys(secs).map(function (s) {
+        return '<div class="section-title">' + h(s) + (s === 'Staff Food' ? ' · billed separately' : '') + '</div><div class="tbl-wrap"><table class="tbl"><tr><th>Vegetable</th><th>Unit</th><th class="num">Qty</th><th>Remarks</th></tr>' +
+          secs[s].map(function (i) {
+            return '<tr><td><div class="b">' + h(i.name) + '</div><div class="small muted hi">' + h(i.hindi) + '</div></td><td>' + h(i.unit) + '</td>' +
+              '<td class="num"><input class="inp sm" style="width:90px;text-align:right" inputmode="decimal" data-v="' + h(i.name) + '"></td><td><input class="inp sm" data-r="' + h(i.name) + '" placeholder="optional"></td></tr>';
+          }).join('') + '</table></div>';
+      }).join('') + '<div class="field mt"><label>Note (optional)</label><input class="inp" id="vnote"></div><button class="btn green mt" id="vplace">' + icon('send') + 'Place vegetable order</button>';
+    $('#vplace', b).onclick = function () {
+      var list = $$('[data-v]', b).filter(function (i) { return parseFloat(i.value) > 0; }).map(function (i) {
+        return { name: i.dataset.v, qty: parseFloat(i.value), remarks: ($('[data-r="' + i.dataset.v + '"]', b) || {}).value || '' };
+      });
+      if (!list.length) return toast('Enter a quantity for at least one vegetable.', 'bad');
+      var btn = this; busy(btn, true, 'Placing…');
+      api('veg.place', { outletId: val('#vOut', b), items: list, note: val('#vnote', b) })
+        .then(function (r) { toast(r.message + (r.mail ? '\n' + r.mail : ''), 'ok'); vegOrder(b); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+  }).catch(function (e) { b.innerHTML = errHtml(e); });
+}
+
+/** Bill entry — the items in the image are never ordered, only billed. */
+function billEntryForm(box, onSaved) {
+  box.innerHTML = loadingHtml();
+  api('stock.picker').then(function (pk) {
+    var cats = pk.cats, items = pk.items, lines = [{}];
+    box.innerHTML = '<h3>' + icon('receipt') + ' New bill entry</h3><div class="form-grid">' + outletField('bOut', true) +
+      '<div class="field"><label>Bill date</label><input type="date" class="inp" id="bDate" value="' + todayISO() + '" max="' + todayISO() + '"></div>' +
+      '<div class="field"><label>Party name *</label><input class="inp" id="bParty" list="bParties" placeholder="Filled from the item — change if needed"><datalist id="bParties">' +
+      pk.parties.map(function (x) { return '<option value="' + h(x) + '">'; }).join('') + '</datalist></div>' +
+      '<div class="field"><label>Bill number' + (pk.billNoRequired ? ' *' : '') + '</label><input class="inp" id="bNo"></div>' +
+      '<div class="full" id="bFile"></div></div>' +
+      '<div class="tbl-wrap mt"><table class="tbl"><thead><tr><th>Category</th><th>Item</th><th class="num">Qty</th><th>Unit</th><th class="num">Rate</th><th class="num">Amount</th><th></th></tr></thead><tbody id="bl"></tbody>' +
+      '<tfoot><tr><td colspan="5">Total</td><td class="num" id="bTot">₹0</td><td></td></tr></tfoot></table></div>' +
+      '<div class="row mt"><button class="btn sm ghost" id="bAdd">' + icon('add') + 'Add item</button><span class="grow"></span><button class="btn green" id="bSave">' + icon('save') + 'Save bill</button></div>';
+    var fp = filePicker($('#bFile', box), 'bill', { label: 'Photo of the bill', required: pk.billRequired });
+    function render() {
+      $('#bl', box).innerHTML = lines.map(function (l, i) {
+        var its = items.filter(function (x) { return x.category === l.category; });
+        return '<tr><td><select class="inp sm" data-cat="' + i + '"><option value="">Pick…</option>' + cats.map(function (c) { return '<option' + (c.name === l.category ? ' selected' : '') + '>' + h(c.name) + '</option>'; }).join('') + '</select></td>' +
+          '<td><select class="inp sm" data-it="' + i + '"><option value="">' + (l.category ? 'Pick item…' : '—') + '</option>' + its.map(function (x) { return '<option' + (x.item === l.item ? ' selected' : '') + '>' + h(x.item) + '</option>'; }).join('') + '</select></td>' +
+          '<td class="num"><input class="inp sm" style="width:80px;text-align:right" inputmode="decimal" data-q="' + i + '" value="' + h(l.qty || '') + '"></td>' +
+          '<td><input class="inp sm" style="width:70px" data-u="' + i + '" value="' + h(l.unit || '') + '"></td>' +
+          '<td class="num"><input class="inp sm" style="width:90px;text-align:right" inputmode="decimal" data-r="' + i + '" value="' + h(l.rate || '') + '" placeholder="opt."></td>' +
+          '<td class="num">' + (l.qty && l.rate ? money(l.qty * l.rate) : '—') + '</td>' +
+          '<td>' + (lines.length > 1 ? '<button class="icon-btn" data-x="' + i + '">' + icon('delete') + '</button>' : '') + '</td></tr>';
+      }).join('');
+      var tot = lines.reduce(function (s, l) { return s + (l.qty && l.rate ? l.qty * l.rate : 0); }, 0);
+      $('#bTot', box).textContent = money(tot);
+      $$('[data-cat]', box).forEach(function (s) { s.onchange = function () { var l = lines[+s.dataset.cat]; l.category = s.value; l.item = ''; render(); }; });
+      $$('[data-it]', box).forEach(function (s) {
+        s.onchange = function () {
+          var l = lines[+s.dataset.it], it = items.filter(function (x) { return x.category === l.category && x.item === s.value; })[0];
+          l.item = s.value; l.unit = it ? it.unit : l.unit;
+          if (it && it.vendor && !val('#bParty', box)) $('#bParty', box).value = it.vendor.split(',')[0].trim();
+          render();
+        };
+      });
+      $$('[data-q]', box).forEach(function (x) { x.onchange = function () { lines[+x.dataset.q].qty = parseFloat(x.value) || ''; render(); }; });
+      $$('[data-u]', box).forEach(function (x) { x.onchange = function () { lines[+x.dataset.u].unit = x.value; }; });
+      $$('[data-r]', box).forEach(function (x) { x.onchange = function () { lines[+x.dataset.r].rate = parseFloat(x.value) || ''; render(); }; });
+      $$('[data-x]', box).forEach(function (x) { x.onclick = function () { lines.splice(+x.dataset.x, 1); render(); }; });
+    }
+    $('#bAdd', box).onclick = function () { lines.push({ category: (lines[lines.length - 1] || {}).category || '' }); render(); };
+    $('#bSave', box).onclick = function () {
+      var f = fp.get(), party = val('#bParty', box), no = val('#bNo', box);
+      var rows = lines.filter(function (l) { return l.item; });
+      if (!rows.length) return toast('Pick at least one item.', 'bad');
+      if (!party) return toast('Enter the party name.', 'bad');
+      if (pk.billNoRequired && !no) return toast('Enter the bill number.', 'bad');
+      if (fp.busy()) return toast('Wait for the bill photo to upload.');
+      if (pk.billRequired && !f) return toast('Take a photo of the bill.', 'bad');
+      if (rows.some(function (l) { return !(l.qty > 0); })) return toast('Enter the quantity on every line.', 'bad');
+      var btn = this; busy(btn, true, 'Saving…');
+      api('stock.save', { outletId: val('#bOut', box), date: val('#bDate', box), rows: rows.map(function (l) {
+        return { category: l.category, item: l.item, qty: l.qty, unit: l.unit, rate: l.rate, party: party, billNo: no, billFileId: f ? f.fileId : '' };
+      }) }).then(function (r) { toast(r.message, 'ok'); onSaved && onSaved(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+    render();
+  }).catch(function (e) { box.innerHTML = errHtml(e); });
+}
+
+function orderHistory(b) {
+  var sub = 'gfp';
+  b.innerHTML = '<div class="row mb"><div class="seg" id="hseg"><button data-s="gfp" class="on">GFP orders</button><button data-s="veg">Vegetables</button><button data-s="bill">Bills</button></div></div><div id="hb"></div>';
+  $$('#hseg button', b).forEach(function (x) { x.onclick = function () { $$('#hseg button', b).forEach(function (y) { y.classList.toggle('on', y === x); }); sub = x.dataset.s; load(); }; });
+  function load() {
+    var hb = $('#hb', b); hb.innerHTML = loadingHtml();
+    if (sub === 'gfp') live('ord.history', { outletId: S.outlet }, function (d) {
+      hb.innerHTML = d.orders.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Order</th><th>Date</th><th>Outlet</th><th class="num">Items</th><th class="num">Qty</th><th>Status</th><th>GRN</th></tr>' +
+        d.orders.map(function (o) { return '<tr class="click" data-o="' + h(o.no) + '"><td class="b nowrap">' + h(o.no) + '</td><td class="nowrap">' + h(o.time) + '</td><td>' + h(o.outlet) + '</td><td class="num">' + o.lines + '</td><td class="num">' + num(o.qty) + '</td><td>' + statusChip(o.status) + (o.dispatched ? ' ' + chip('Dispatched', 'blue') : '') + '</td><td>' + (o.grn ? chip(o.grn, 'green') : '—') + '</td></tr>'; }).join('') +
+        '</table></div>' : '<div class="card">' + emptyHtml('receipt', 'No GFP order in the last few weeks.') + '</div>';
+      $$('[data-o]', hb).forEach(function (r) { r.onclick = function () { orderLinesModal(r.dataset.o); }; });
+    }, { box: hb }).catch(function (e) { hb.innerHTML = errHtml(e); });
+    else if (sub === 'veg') live('veg.history', { outletId: S.outlet, from: addDaysISO(todayISO(), -45) }, function (d) {
+      hb.innerHTML = '<div id="vmon" class="mb"></div>' + (d.orders.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Order</th><th>Date</th><th>Outlet</th><th class="num">Lines</th><th>Status</th><th class="num">Amount</th><th>Bill</th></tr>' +
+        d.orders.map(function (o) { return '<tr class="click" data-v="' + h(o.id) + '"><td class="b nowrap">' + h(o.id) + '</td><td class="nowrap">' + h(o.time) + '</td><td>' + h(o.outlet) + '</td><td class="num">' + o.lines + '</td><td>' + (o.pending ? chip(o.pending + ' pending', 'orange') : chip('Received', 'green')) + '</td><td class="num">' + (o.amount ? money(o.amount) : '—') + '</td><td>' + h(o.bill || '') + '</td></tr>'; }).join('') +
+        '</table></div>' : '<div class="card">' + emptyHtml('eco', 'No vegetable order yet.') + '</div>');
+      $$('[data-v]', hb).forEach(function (r) { r.onclick = function () { vegReceiveModal(r.dataset.v, true); }; });
+      vegMonthInto($('#vmon', hb), monthISO());
+    }, { box: hb }).catch(function (e) { hb.innerHTML = errHtml(e); });
+    else stockListInto(hb, addDaysISO(todayISO(), -30), todayISO(), '');
+  }
+  load();
+}
+function vegMonthInto(box, month) {
+  box.innerHTML = loadingHtml();
+  api('veg.month', { outletId: S.outlet, month: month }).then(function (d) {
+    box.innerHTML = '<div class="card"><div class="row"><h3 class="grow" style="margin:0">' + icon('summarize') + ' Vegetable report</h3>' +
+      '<input type="month" class="inp sm" id="vmm" value="' + h(d.month) + '" style="width:auto"></div>' +
+      '<div class="row mt">' + chip('Vegetables ' + money(d.vegTotal), 'green') + chip('Staff Food ' + money(d.staffTotal), 'blue') + chip('Total ' + money(d.vegTotal + d.staffTotal), 'grey') + '</div>' +
+      (d.days.length ? '<div class="grid g2 mt"><div class="tbl-wrap"><table class="tbl"><tr><th>Day</th><th class="num">Vegetables</th><th class="num">Staff Food</th></tr>' +
+        d.days.map(function (x) { return '<tr><td>' + h(x.date) + '</td><td class="num">' + money(x.veg) + '</td><td class="num">' + money(x.staff) + '</td></tr>'; }).join('') + '</table></div>' +
+        '<div class="tbl-wrap"><table class="tbl"><tr><th>Item</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Amount</th></tr>' +
+        d.items.map(function (x) { return '<tr><td>' + h(x.item) + ' <span class="small muted hi">' + h(x.hindi) + '</span></td><td class="num">' + num(x.ordered) + ' ' + h(x.unit) + '</td><td class="num">' + num(x.received) + '</td><td class="num">' + money(x.amount) + '</td></tr>'; }).join('') + '</table></div></div>'
+        : '<div class="small muted mt">No vegetable order in this month.</div>') + '</div>';
+    $('#vmm', box).onchange = function () { vegMonthInto(box, this.value); };
+  }).catch(function (e) { box.innerHTML = errHtml(e); });
+}
+function orderLinesModal(no) {
+  var m = modal({ title: 'Order ' + no, wide: true, body: loadingHtml() });
+  api('ord.lines', { orderNo: no }).then(function (d) {
+    $('.modal-b', m.el).innerHTML = '<div class="kv mb"><b>Date</b><span>' + h(d.date) + '</span><b>Status</b><span>' + statusChip(d.status) + '</span><b>By</b><span>' + h(d.by) + '</span></div>' +
+      '<div class="tbl-wrap"><table class="tbl"><tr><th>#</th><th>Item</th><th>Unit</th><th class="num">Ordered</th><th class="num">Dispatched</th></tr>' +
+      d.lines.map(function (l, i) { return '<tr><td>' + (i + 1) + '</td><td>' + h(l.name) + '<div class="small muted">' + h(l.code) + '</div></td><td>' + h(l.unit) + '</td><td class="num">' + num(l.qty) + '</td><td class="num">' + (l.dispatch === null || l.dispatch === undefined ? '—' : num(l.dispatch)) + '</td></tr>'; }).join('') + '</table></div>';
+  }).catch(function (e) { $('.modal-b', m.el).innerHTML = errHtml(e); });
+}
+function stockListInto(box, from, to, q) {
+  box.innerHTML = loadingHtml();
+  api('stock.list', { outletId: S.outlet, from: from, to: to, q: q }).then(function (d) {
+    box.innerHTML = d.rows.length ? '<div class="small muted mb">' + d.count + ' entries · ' + money(d.total) + '</div><div class="tbl-wrap"><table class="tbl"><tr><th>Date</th><th>Item</th><th>Party</th><th class="num">Qty</th><th class="num">Amount</th><th>Bill no.</th><th>Bill</th><th>By</th></tr>' +
+      d.rows.map(function (r) {
+        return '<tr><td class="nowrap">' + h(r.date) + '</td><td><div class="b">' + h(r.item) + '</div><div class="small muted">' + h(r.category) + (S.outlet === 'ALL' ? ' · ' + h(r.outlet) : '') + '</div></td><td>' + h(r.party) + '</td>' +
+          '<td class="num nowrap">' + num(r.qty) + ' ' + h(r.unit) + '</td><td class="num">' + (r.amount ? money(r.amount) : '—') + '</td><td>' + h(r.billNo) + '</td>' +
+          '<td>' + (r.fileId ? '<button class="btn sm ghost" data-bill="' + h(r.id) + '">' + icon('image') + '</button>' : '—') + '</td><td class="small">' + h(r.by) + '</td></tr>';
+      }).join('') + '</table></div>' : '<div class="card">' + emptyHtml('receipt_long', 'No bill entry in this period.') + '</div>';
+    $$('[data-bill]', box).forEach(function (x) { x.onclick = function () { viewFile('stock', x.dataset.bill, 'Bill'); }; });
+  }).catch(function (e) { box.innerHTML = errHtml(e); });
+}
+
+/* ---------------- GRN & STOCK REGISTER ---------------- */
+V.grn = function (el, p) {
+  var tab = p.tab || 'gfp';
+  el.innerHTML = pageHead('GRN & Stock Register', 'What arrived at ' + h(outletName()) + ' — GFP orders, vegetables and bills') +
+    tabsHtml([['gfp', 'GFP order GRN'], ['veg', 'Vegetable receipt'], ['stock', 'Stock register'], ['hist', 'GRN history']], tab) + '<div id="gb"></div>';
+  bindTabs(el, function (t) { tab = t; show(); });
+  function show() {
+    var b = $('#gb', el);
+    if (tab === 'gfp') grnOrderList(b);
+    else if (tab === 'veg') vegPendingList(b);
+    else if (tab === 'stock') {
+      b.innerHTML = '<div class="card"><div class="row"><div class="field" style="margin:0"><label>From</label><input type="date" class="inp sm" id="sf" value="' + addDaysISO(todayISO(), -7) + '"></div>' +
+        '<div class="field" style="margin:0"><label>To</label><input type="date" class="inp sm" id="st" value="' + todayISO() + '"></div>' +
+        '<div class="field grow" style="margin:0"><label>Search</label><input class="inp sm" id="sq" placeholder="Item, party, bill no…"></div>' +
+        '<button class="btn" id="sadd" style="align-self:flex-end">' + icon('add') + 'Bill entry</button></div></div><div id="sformw"></div><div class="mt" id="sl"></div>';
+      var reload = function () { stockListInto($('#sl', b), val('#sf', b), val('#st', b), val('#sq', b)); };
+      ['#sf', '#st'].forEach(function (s) { $(s, b).onchange = reload; });
+      var tmr; $('#sq', b).oninput = function () { clearTimeout(tmr); tmr = setTimeout(reload, 400); };
+      $('#sadd', b).onclick = function () { var w = $('#sformw', b); w.innerHTML = '<div class="card mt" id="sfc"></div>'; billEntryForm($('#sfc', w), function () { w.innerHTML = ''; reload(); }); };
+      reload();
+      if (p.add) $('#sadd', b).click();
+    } else grnHistory(b);
+  }
+  show();
+};
+
+function grnOrderList(b) {
+  b.innerHTML = loadingHtml('Reading GFP orders…');
+  live('grn.orders', { outletId: S.outlet }, function (d) {
+    var list = d.orders.slice().sort(function (a, c) { return (!!a.grn - !!c.grn) || String(c.date).localeCompare(String(a.date)); });
+    b.innerHTML = list.length ? '<div class="small muted mb">' + d.pending + ' order(s) waiting for GRN</div><div class="list">' + list.map(function (o) {
+      return '<div class="li"><div class="top"><div class="grow"><div class="title">' + h(o.no) + '</div><div class="small muted">' + h(o.time) + ' · ' + o.lines + ' items · ' + num(o.qty) + ' qty' +
+        (S.outlet === 'ALL' ? ' · ' + h(o.outlet) : '') + '</div><div class="row gap6 mt" style="margin-top:6px">' + statusChip(o.status) + (o.dispatched ? chip('Dispatched', 'blue') : '') + '</div></div>' +
+        (o.grn ? chip('GRN ' + o.grn, 'green') : '<button class="btn sm" data-g="' + h(o.no) + '">' + icon('inventory') + 'Fill GRN</button>') + '</div></div>';
+    }).join('') + '</div>' : '<div class="card">' + emptyHtml('inventory_2', 'No GFP order for this outlet in the last weeks.') + '</div>';
+    $$('[data-g]', b).forEach(function (x) { x.onclick = function () { grnForm(b, x.dataset.g); }; });
+  }, { box: b }).catch(function (e) { b.innerHTML = errHtml(e); });
+}
+
+function grnForm(b, no) {
+  b.innerHTML = loadingHtml('Loading order ' + no + '…');
+  api('grn.load', { orderNo: no }).then(function (d) {
+    b.innerHTML = '<div class="card"><div class="row"><button class="icon-btn" id="gback">' + icon('arrow_back') + '</button><div class="grow"><h3 style="margin:0">GRN for ' + h(d.orderNo) + '</h3>' +
+      '<div class="small muted">' + h(d.outlet) + ' · ordered ' + h(d.orderDate) + ' · ' + h(d.by) + ' · ' + h(d.status) + '</div></div></div>' +
+      (d.already ? errHtml('Already received — GRN ' + d.already) : '') +
+      '<div class="form-grid mt"><div class="field"><label>GRN date</label><input type="date" class="inp" id="gd" value="' + todayISO() + '" max="' + todayISO() + '"></div>' +
+      '<div class="field"><label>Remarks</label><input class="inp" id="gr" placeholder="Vehicle no., damages…"></div></div>' +
+      '<div class="pill-note">Received is pre-filled with what was dispatched (or ordered). Change only the lines that differ.</div></div>' +
+      '<div class="tbl-wrap mt"><table class="tbl"><tr><th>Item</th><th>Unit</th><th class="num">Ordered</th><th class="num">Dispatched</th><th class="num">Received</th><th class="num">Short</th><th>Remarks</th></tr>' +
+      d.lines.map(function (l, i) {
+        return '<tr><td><div class="b">' + h(l.name) + '</div><div class="small muted">' + h(l.code) + '</div></td><td>' + h(l.unit) + '</td><td class="num">' + num(l.ordered) + '</td>' +
+          '<td class="num">' + (l.dispatched === null || l.dispatched === undefined ? '—' : num(l.dispatched)) + '</td>' +
+          '<td class="num"><input class="inp sm" style="width:84px;text-align:right" inputmode="decimal" data-r="' + i + '" value="' + l.received + '"></td>' +
+          '<td class="num" data-s="' + i + '">0</td><td><input class="inp sm" data-rm="' + i + '" placeholder="optional"></td></tr>';
+      }).join('') + '<tr><td colspan="7" class="small muted" id="gsum"></td></tr></table></div>' +
+      '<div class="row mt"><span class="grow"></span><button class="btn green" id="gsave"' + (d.already ? ' disabled' : '') + '>' + icon('save') + 'Save GRN</button></div>';
+    $('#gback', b).onclick = function () { grnOrderList(b); };
+    function calc() {
+      var short = 0;
+      d.lines.forEach(function (l, i) { var r = parseFloat($('[data-r="' + i + '"]', b).value) || 0, s = Math.max(0, l.ordered - r); short += s; $('[data-s="' + i + '"]', b).innerHTML = s ? '<b style="color:var(--red)">' + num(s) + '</b>' : '0'; });
+      $('#gsum', b).textContent = short ? 'Total short: ' + num(short) : 'Everything received as ordered.';
+    }
+    $$('[data-r]', b).forEach(function (x) { x.oninput = calc; });
+    calc();
+    $('#gsave', b).onclick = function () {
+      var btn = this; busy(btn, true, 'Saving…');
+      api('grn.save', { orderNo: d.orderNo, grnDate: val('#gd', b), remarks: val('#gr', b), lines: d.lines.map(function (l, i) {
+        return { code: l.code, name: l.name, received: parseFloat($('[data-r="' + i + '"]', b).value) || 0, remarks: $('[data-rm="' + i + '"]', b).value };
+      }) }).then(function (r) { toast(r.message, 'ok'); dcDel('grn.orders', { outletId: S.outlet }); dcDel('grn.history', { outletId: S.outlet }); grnOrderList(b); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+  }).catch(function (e) { b.innerHTML = '<button class="btn ghost mb" id="gb2">' + icon('arrow_back') + 'Back</button>' + errHtml(e); $('#gb2', b).onclick = function () { grnOrderList(b); }; });
+}
+
+function vegPendingList(b) {
+  b.innerHTML = loadingHtml();
+  live('veg.pending', { outletId: S.outlet }, function (d) {
+    b.innerHTML = d.orders.length ? '<div class="list">' + d.orders.map(function (o) {
+      return '<div class="li"><div class="top"><div class="grow"><div class="title">' + h(o.id) + '</div><div class="small muted">' + h(o.time) + ' · ' + h(o.outlet) + ' · ' + o.lines + ' lines · by ' + h(o.by) + '</div></div>' +
+        chip(o.pending + ' pending', 'orange') + '<button class="btn sm" data-v="' + h(o.id) + '">' + icon('scale') + 'Enter received</button></div></div>';
+    }).join('') + '</div>' : '<div class="card">' + emptyHtml('eco', 'No vegetable order is waiting to be received.') + '</div>';
+    $$('[data-v]', b).forEach(function (x) { x.onclick = function () { vegReceiveModal(x.dataset.v, false, function () { dcDel('veg.pending', { outletId: S.outlet }); vegPendingList(b); }); }; });
+  }, { box: b }).catch(function (e) { b.innerHTML = errHtml(e); });
+}
+
+function vegReceiveModal(id, readOnly, after) {
+  var fp;
+  var m = modal({ title: 'Vegetables · ' + id, full: true, body: loadingHtml(),
+    actions: readOnly ? [] : [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save received', cls: 'green', click: function (close, el, btn) {
+      if (fp && fp.busy()) return toast('Wait for the bill photo.');
+      var f = fp && fp.get();
+      var lines = $$('[data-row]', el).map(function (tr) {
+        return { row: +tr.dataset.row, rec: parseFloat($('[data-rec]', tr).value) || 0, rate: parseFloat($('[data-rate]', tr).value) || 0, status: $('[data-st]', tr).value };
+      });
+      busy(btn, true);
+      api('veg.receive', { orderId: id, lines: lines, party: val('#vp', el), billNo: val('#vb', el), billFileId: f ? f.fileId : (S.cache.vegBill || '') })
+        .then(function (r) { close(); toast(r.message, 'ok'); after && after(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    } }] });
+  api('veg.order', { orderId: id }).then(function (d) {
+    S.cache.vegBill = d.billFileId || '';
+    $('.modal-b', m.el).innerHTML = '<div class="small muted mb">' + h(d.outlet) + ' · ' + h(d.date) + '</div>' +
+      (readOnly ? '' : '<div class="form-grid"><div class="field"><label>Party / vendor</label><input class="inp" id="vp" value="' + h(d.party || '') + '"></div>' +
+        '<div class="field"><label>Bill number</label><input class="inp" id="vb" value="' + h(d.bill || '') + '"></div><div class="full" id="vfb"></div></div>') +
+      '<div class="tbl-wrap mt"><table class="tbl"><tr><th>Vegetable</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Rate ₹</th><th class="num">Amount</th><th>Status</th></tr>' +
+      d.lines.map(function (l) {
+        return '<tr data-row="' + l.row + '"><td><div class="b">' + h(l.name) + '</div><div class="small muted hi">' + h(l.hindi) + (l.remarks ? ' · ' + h(l.remarks) : '') + '</div></td>' +
+          '<td class="num nowrap">' + num(l.qty) + ' ' + h(l.unit) + '</td>' +
+          (readOnly ? '<td class="num">' + (l.rec === '' ? '—' : num(l.rec)) + '</td><td class="num">' + (l.rate === '' ? '—' : num(l.rate)) + '</td><td class="num">' + (l.amount ? money(l.amount) : '—') + '</td><td>' + statusChip(l.status) + '</td>' :
+          '<td class="num"><input class="inp sm" style="width:80px;text-align:right" inputmode="decimal" data-rec value="' + (l.rec === '' ? l.qty : l.rec) + '"></td>' +
+          '<td class="num"><input class="inp sm" style="width:80px;text-align:right" inputmode="decimal" data-rate value="' + (l.rate === '' ? '' : l.rate) + '"></td>' +
+          '<td class="num" data-amt>—</td><td><select class="inp sm" data-st><option' + (l.status !== 'Not Received' ? ' selected' : '') + '>Received</option><option' + (l.status === 'Not Received' ? ' selected' : '') + '>Not Received</option><option>Pending</option></select></td>') + '</tr>';
+      }).join('') + (readOnly ? '' : '<tr><td colspan="4" class="b">Total</td><td class="num b" id="vtot">₹0</td><td></td></tr>') + '</table></div>' +
+      (readOnly && d.billFileId ? '<button class="btn sm ghost mt" id="vbill">' + icon('image') + 'View bill</button>' : '');
+    if (!readOnly) {
+      fp = filePicker($('#vfb', m.el), 'bill', { label: 'Photo of the vegetable bill (optional)' });
+      var calc = function () {
+        var t = 0;
+        $$('[data-row]', m.el).forEach(function (tr, i) {
+          var l = d.lines[i], r = parseFloat($('[data-rec]', tr).value) || 0, rt = parseFloat($('[data-rate]', tr).value) || 0, u = String(l.unit).toLowerCase();
+          var a = (u === 'g' || u === 'gm' || u === 'grm') ? r / 1000 * rt : r * rt; t += a;
+          $('[data-amt]', tr).textContent = a ? money(a) : '—';
+        });
+        $('#vtot', m.el).textContent = money(t);
+      };
+      $$('[data-rec],[data-rate]', m.el).forEach(function (x) { x.oninput = calc; });
+      calc();
+    } else if ($('#vbill', m.el)) $('#vbill', m.el).onclick = function () { viewFile('veg', id, 'Vegetable bill'); };
+  }).catch(function (e) { $('.modal-b', m.el).innerHTML = errHtml(e); });
+}
+
+function grnHistory(b) {
+  b.innerHTML = loadingHtml();
+  live('grn.history', { outletId: S.outlet }, function (d) {
+    b.innerHTML = d.rows.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>GRN</th><th>Date</th><th>Order</th><th>Outlet</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Short</th><th>By</th></tr>' +
+      d.rows.map(function (r) { return '<tr class="click" data-g="' + h(r.no) + '"><td class="b">' + h(r.no) + '</td><td>' + h(r.date) + '</td><td>' + h(r.orderNo) + '</td><td>' + h(r.outlet) + '</td><td class="num">' + num(r.ordered) + '</td><td class="num">' + num(r.received) + '</td><td class="num">' + (r.short ? '<b style="color:var(--red)">' + num(r.short) + '</b>' : '0') + '</td><td>' + h(r.by) + '</td></tr>'; }).join('') +
+      '</table></div>' : '<div class="card">' + emptyHtml('history', 'No GRN yet.') + '</div>';
+    $$('[data-g]', b).forEach(function (r) {
+      r.onclick = function () {
+        var m = modal({ title: 'GRN ' + r.dataset.g, wide: true, body: loadingHtml() });
+        api('grn.lines', { grnNo: r.dataset.g }).then(function (x) {
+          $('.modal-b', m.el).innerHTML = '<div class="tbl-wrap"><table class="tbl"><tr><th>Item</th><th>Unit</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Short</th><th>Remarks</th></tr>' +
+            x.lines.map(function (l) { return '<tr><td>' + h(l.name) + '</td><td>' + h(l.unit) + '</td><td class="num">' + num(l.ordered) + '</td><td class="num">' + num(l.received) + '</td><td class="num">' + num(l.short) + '</td><td>' + h(l.remarks) + '</td></tr>'; }).join('') + '</table></div>';
+        }).catch(function (e) { $('.modal-b', m.el).innerHTML = errHtml(e); });
+      };
+    });
+  }, { box: b }).catch(function (e) { b.innerHTML = errHtml(e); });
+}
+
+/* ---------------- PRODUCTION ENTRY (the prep sheet — you are the doer) ---------------- */
+V.prod_entry = function (el) {
+  el.innerHTML = pageHead('Production Entry', '') +
+    '<div id="peb">' + loadingHtml() + '</div>';
+  var b = $('#peb', el), D = null;
+  function load(quiet) {
+    live('prep.meta', {}, function (d) { D = d; draw(); }, { el: b, busy: true, quiet: quiet }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  function stdFor(dish, raw) {
+    var s = (D.dishes || []).filter(function (x) { return x.dish === dish; })[0];
+    if (!s || !(s.rawW > 0) || !(raw > 0)) return null;
+    return { yield: Math.round(s.yield * raw / s.rawW), time: Math.round(s.maxTime * raw / s.rawW), s: s };
+  }
+  function draw() {
+    var d = D, u = d.unit;
+    b.innerHTML = '<div class="card mb"><div class="row"><div class="avatar">' + h(initials(d.doer)) + '</div><div class="grow"><div class="b">' + h(d.doer) + '</div>' +
+      '<div class="small muted">Doer · ' + h(d.kitchen || 'Prep kitchen') + ' — every batch here is saved under your name</div></div>' +
+      (d.canReport ? '<button class="btn sm ghost" id="peRep">' + icon('soup_kitchen') + 'Production Records</button>' : '') + '</div></div>' +
+      '<div class="section-title mt0">Cooking now (' + d.open.length + ')</div>' +
+      (d.open.length ? '<div class="list">' + d.open.map(function (x, i) {
+        var late = x.stdTime && x.running > x.stdTime;
+        return '<div class="li"><div class="top"><div class="grow"><div class="title">' + h(x.dish) + ' <span class="small muted">' + h(x.ingredient) + '</span></div>' +
+          '<div class="small muted">Started ' + h(x.timeIn) + ' · raw ' + num(x.raw) + ' ' + h(x.rawUnit || u) + '</div>' +
+          '<div class="row gap6" style="margin-top:6px">' + chip((x.running === '' ? '—' : x.running) + ' min running', late ? 'red' : 'orange') +
+          (x.stdTime ? chip('standard ' + x.stdTime + ' min', 'grey') : '') + (x.stdYield ? chip('expected ≈ ' + num(x.stdYield) + ' ' + u, 'blue') : '') +
+          (x.startImg ? '<a class="small" href="' + h(x.startImg) + '" target="_blank">start photo</a>' : '') + '</div></div></div>' +
+          '<div class="form-grid mt"><div class="field"><label>Produced quantity (' + h(u) + ') *</label><input class="inp sm" inputmode="decimal" data-pq="' + i + '" placeholder="' + (x.stdYield ? 'e.g. ' + x.stdYield : '') + '"></div>' +
+          '<div class="field full" data-pph="' + i + '"></div></div>' +
+          '<div class="row"><span class="grow"></span><button class="btn sm green" data-fin="' + i + '">' + icon('task_alt') + 'Finish batch</button></div></div>';
+      }).join('') + '</div>' : '<div class="card">' + emptyHtml('skillet', 'Nothing is cooking under your name.') + '</div>') +
+      '<div class="section-title">Start a batch</div><div class="card"><div class="form-grid">' +
+      '<div class="field"><label>Dish *</label><select class="inp" id="peD"><option value="">Pick the dish…</option>' + d.dishes.map(function (x) { return '<option>' + h(x.dish) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label>Main ingredient</label><div class="inp" id="peI" style="display:flex;align-items:center;background:#FBF6EE">—</div></div>' +
+      '<div class="field"><label>Raw quantity (' + h(u) + ') *</label><input class="inp" id="peR" inputmode="decimal" placeholder="e.g. 500"></div>' +
+      '<div class="field"><label>Standard for this quantity</label><div class="inp" id="peS" style="display:flex;align-items:center;background:#FBF6EE">—</div></div>' +
+      '<div class="full" id="pePh"></div></div>' +
+      '<div class="row mt"><span class="grow small muted">' + (d.photo ? 'A photo of the raw material is needed to start, and one of the finished item to finish.' : '') + '</span>' +
+      '<button class="btn green" id="peGo">' + icon('play_arrow') + 'Start batch</button></div></div>' +
+      '<div class="section-title">Finished today (' + d.done.length + ')</div>' +
+      (d.done.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Dish</th><th>Time in → out</th><th class="num">Raw</th><th class="num">Produced</th><th class="num">Minutes</th></tr>' +
+        d.done.map(function (x) {
+          return '<tr><td><div class="b">' + h(x.dish) + '</div><div class="small muted">' + h(x.ingredient) + '</div></td><td class="nowrap small">' + h(x.timeIn.slice(11)) + ' → ' + h(x.timeOut || '—') + '</td>' +
+            '<td class="num nowrap">' + num(x.raw) + ' ' + h(x.rawUnit) + '</td><td class="num nowrap">' + (x.produced ? num(x.produced) + ' ' + h(x.outUnit) : '—') + '</td><td class="num">' + (x.mins === '' ? '—' : x.mins) + '</td></tr>';
+        }).join('') + '</table></div>' : '<div class="card">' + emptyHtml('history', 'Nothing finished yet today.') + '</div>');
+    if ($('#peRep', b)) $('#peRep', b).onclick = function () { go('production', {}); };
+    var startPic = filePicker($('#pePh', b), 'prep', { label: 'Photo of the raw material', required: d.photo, accept: 'image/*' });
+    function hint() {
+      var dish = val('#peD', b), raw = parseFloat(val('#peR', b)), s = (d.dishes || []).filter(function (x) { return x.dish === dish; })[0];
+      $('#peI', b).textContent = s ? (s.ingredient || '—') : '—';
+      var st = stdFor(dish, raw);
+      $('#peS', b).innerHTML = st ? '≈ <b>&nbsp;' + num(st.yield) + ' ' + h(u) + '</b>&nbsp;in ' + st.time + ' min' : (s && s.rawW ? '<span class="small muted">' + num(s.rawW) + ' ' + h(u) + ' → ' + num(s.yield) + ' in ' + s.maxTime + ' min</span>' : '—');
+    }
+    $('#peD', b).onchange = hint; $('#peR', b).oninput = hint;
+    $('#peGo', b).onclick = function () {
+      var btn = this, dish = val('#peD', b), raw = val('#peR', b);
+      if (!dish) return toast('Pick the dish.', 'bad');
+      if (!(parseFloat(raw) > 0)) return toast('Enter the raw quantity.', 'bad');
+      if (startPic.busy()) return toast('Wait for the photo to finish uploading.');
+      if (d.photo && !startPic.get()) return toast('Take a photo of the raw material first.', 'bad');
+      busy(btn, true, 'Starting…');
+      api('prep.start', { dish: dish, raw: raw, photoId: startPic.get() ? startPic.get().fileId : '' })
+        .then(function (r) { toast(r.message, 'ok'); fresh(r); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+    var finPics = d.open.map(function (x, i) { return filePicker($('[data-pph="' + i + '"]', b), 'prep', { label: 'Photo of the finished ' + x.dish, required: d.photo, accept: 'image/*' }); });
+    $$('[data-fin]', b).forEach(function (bt) {
+      bt.onclick = function () {
+        var i = +bt.dataset.fin, x = d.open[i], q = val('[data-pq="' + i + '"]', b), pic = finPics[i];
+        if (!(parseFloat(q) > 0)) return toast('Enter the produced quantity.', 'bad');
+        if (pic.busy()) return toast('Wait for the photo to finish uploading.');
+        if (d.photo && !pic.get()) return toast('Take a photo of the finished item first.', 'bad');
+        busy(bt, true, 'Saving…');
+        api('prep.finish', { row: x.row, dish: x.dish, timeIn: x.timeIn, produced: q, photoId: pic.get() ? pic.get().fileId : '' })
+          .then(function (r) { toast(r.message, 'ok'); fresh(r); })
+          .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); if (STALE_RE.test(e.message)) load(true); });
+      };
+    });
+  }
+  /** The answer carries the fresh screen — draw it now (the form just sent is not "work in progress"). */
+  function fresh(r) {
+    if (r && r.meta) { D = r.meta; dcSet(dcKey('prep.meta', {}), r.meta); draw(); window.scrollTo(0, 0); }
+    else load(true);
+  }
+  load(false);
+};
+
+/* ---------------- PRODUCTION (prep kitchen, item-wise) ---------------- */
+V.production = function (el, p) {
+  var from = p.from || todayISO(), to = p.to || from;
+  el.innerHTML = pageHead('Production Records', '') +
+    '<div class="card"><div class="row"><div class="field" style="margin:0"><label>From</label><input type="date" class="inp sm" id="pf" value="' + from + '" max="' + todayISO() + '"></div>' +
+    '<div class="field" style="margin:0"><label>To</label><input type="date" class="inp sm" id="pt" value="' + to + '" max="' + todayISO() + '"></div>' +
+    '<div class="field grow" style="margin:0"><label>Item</label><input class="inp sm" id="pq" placeholder="Filter by dish…"></div>' +
+    '<div class="seg" style="align-self:flex-end"><button data-r="0">Today</button><button data-r="1">Yesterday</button><button data-r="7">7 days</button></div></div></div><div id="pb" class="mt">' + loadingHtml() + '</div>';
+  $$('.seg button', el).forEach(function (b) {
+    b.onclick = function () { var n = +b.dataset.r; var t = n === 1 ? addDaysISO(todayISO(), -1) : todayISO(); var f = n === 7 ? addDaysISO(todayISO(), -6) : t; go('production', { from: f, to: t }); };
+  });
+  $('#pf', el).onchange = $('#pt', el).onchange = function () { go('production', { from: val('#pf', el), to: val('#pt', el) }); };
+  var data;
+  live('prod.report', { from: from, to: to }, function (d) { data = d; render(); }).catch(function (e) { $('#pb', el).innerHTML = errHtml(e); });
+  $('#pq', el).oninput = function () { render(); };
+  function render() {
+    var d = data, b = $('#pb', el); if (!d) return;
+    if (!d.linked) { b.innerHTML = '<div class="card">' + emptyHtml('soup_kitchen', d.message) + '</div>'; return; }
+    var q = val('#pq', el).toLowerCase();
+    var list = d.dishes.filter(function (x) { return !q || x.dish.toLowerCase().indexOf(q) >= 0; });
+    b.innerHTML = '<div class="row mb">' + chip(d.totals.dishes + ' items', 'blue') + chip(d.totals.batches + ' batches', 'green') + (d.totals.open ? chip(d.totals.open + ' still cooking', 'orange') : '') +
+      '<span class="small muted">' + h(d.outlet) + ' · ' + fmtISO(d.from) + (d.to !== d.from ? ' – ' + fmtISO(d.to) : '') + '</span></div>' +
+      (list.length ? '<div class="list">' + list.map(function (g, gi) {
+        var y = g.yieldPct === '' ? '' : chip('Yield ' + g.yieldPct + '% of std', g.yieldPct >= 95 ? 'green' : g.yieldPct >= 85 ? 'orange' : 'red');
+        return '<div class="dish"><div class="dish-h" data-d="' + gi + '"><div class="grow"><div class="nm">' + h(g.dish) + '</div><div class="small muted">' + h(g.ingredient) + ' · prepared <b>' + g.count + '</b> time' + (g.count > 1 ? 's' : '') + '</div></div>' +
+          '<div class="stat"><span class="small muted">Raw used</span><b>' + num(g.raw) + ' ' + h(g.rawUnit) + '</b></div>' +
+          '<div class="stat"><span class="small muted">Produced</span><b>' + num(g.produced) + ' ' + h(g.outUnit) + '</b></div>' + y + icon('expand_more') + '</div>' +
+          '<div class="hide" data-body="' + gi + '"><div class="tbl-wrap" style="border-radius:0;border-left:0;border-right:0;border-bottom:0"><table class="tbl"><tr><th>#</th><th>Date</th><th>Time in → out</th><th>Doer</th><th class="num">Raw qty</th><th class="num">Produced qty</th><th class="num">Std yield</th><th class="num">Minutes (std)</th><th>Photos</th></tr>' +
+          g.batches.map(function (x) {
+            return '<tr><td>' + x.n + '</td><td class="nowrap">' + h(x.date) + '</td><td class="nowrap">' + h(x.timeIn) + ' → ' + (x.timeOut ? h(x.timeOut) : chip('cooking', 'orange')) + '</td><td>' + h(x.doer) + '</td>' +
+              '<td class="num nowrap">' + num(x.raw) + ' ' + h(x.rawUnit) + '</td><td class="num nowrap">' + (x.produced ? num(x.produced) + ' ' + h(x.outUnit) : '—') + '</td>' +
+              '<td class="num">' + (x.stdYield === '' ? '—' : num(x.stdYield)) + '</td><td class="num">' + (x.mins === '' ? '—' : x.mins) + (x.stdTime === '' ? '' : ' <span class="muted">(' + x.stdTime + ')</span>') + '</td>' +
+              '<td class="nowrap">' + (x.startImg ? '<a href="' + h(x.startImg) + '" target="_blank">start</a>' : '') + (x.doneImg ? ' · <a href="' + h(x.doneImg) + '" target="_blank">done</a>' : '') + '</td></tr>';
+          }).join('') + '<tfoot><tr><td colspan="4">Total · ' + g.count + ' batch' + (g.count > 1 ? 'es' : '') + '</td><td class="num">' + num(g.raw) + ' ' + h(g.rawUnit) + '</td><td class="num">' + num(g.produced) + ' ' + h(g.outUnit) + '</td><td class="num">' + (g.stdYield ? num(g.stdYield) : '—') + '</td><td class="num">' + num(g.minutes) + '</td><td></td></tr></tfoot></table></div></div></div>';
+      }).join('') + '</div>' : '<div class="card">' + emptyHtml('soup_kitchen', 'Nothing was prepared in this period.') + '</div>');
+    $$('[data-d]', b).forEach(function (hd) { hd.onclick = function () { $('[data-body="' + hd.dataset.d + '"]', b).classList.toggle('hide'); }; });
+    if (list.length === 1) $('[data-body="0"]', b).classList.remove('hide');
+  }
+};
+
+/* ---------------- DAILY CLOSING – FOOD ---------------- */
+V.closing = function (el, p) {
+  var date = p.date || todayISO(), shift = p.shift || '';
+  el.innerHTML = pageHead('Daily Closing – Food', '') + '<div id="cb">' + loadingHtml() + '</div>';
+  var outletId = p.outletId || singleOutlet();
+  api('close.form', { outletId: outletId, date: date, shift: shift }).then(function (d) {
+    var b = $('#cb', el);
+    b.innerHTML = '<div class="card"><div class="row">' + outletField('cOut', true, d.outletId) +
+      '<div class="field" style="margin:0"><label>Date</label><input type="date" class="inp" id="cDate" value="' + d.date + '" max="' + todayISO() + '"></div>' +
+      '<div class="field" style="margin:0"><label>Shift</label><div class="seg" id="cShift">' + d.shifts.map(function (s) { return '<button data-s="' + h(s) + '" class="' + (s === d.shift ? 'on' : '') + '">' + h(s) + '</button>'; }).join('') + '</div></div></div>' +
+      (d.saved ? '<div class="pill-note mt">Already saved by ' + h(d.saved.by) + ' at ' + h(d.saved.at) + ' — saving again replaces it.</div>' : '') + '</div>' +
+      '<div class="tbl-wrap mt"><table class="tbl"><tr><th>Item</th><th>Unit</th><th class="num">Closing qty</th><th class="num">Handover qty</th><th class="num">Wastage</th><th>Remarks</th></tr>' +
+      d.items.map(function (it, i) {
+        return '<tr><td class="hi">' + h(it.item) + '</td><td>' + h(it.unit) + '</td><td class="num"><input class="inp sm" style="width:90px;text-align:right" inputmode="decimal" data-c="' + i + '" value="' + h(it.closing) + '"></td>' +
+          '<td class="num"><input class="inp sm" style="width:90px;text-align:right" inputmode="decimal" data-h="' + i + '" value="' + h(it.handover) + '"></td><td class="num" data-w="' + i + '">—</td>' +
+          '<td><input class="inp sm" data-r="' + i + '" value="' + h(it.remarks) + '"></td></tr>';
+      }).join('') + '</table></div>' +
+      '<div class="card mt"><div class="form-grid"><div class="field"><label>Handed over to</label><select class="inp" id="cTo"><option value="">—</option>' +
+      d.people.map(function (x) { return '<option' + (d.saved && d.saved.to === x ? ' selected' : '') + '>' + h(x) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field" style="align-self:flex-end"><button class="btn green block" id="cSave">' + icon('save') + 'Save ' + h(d.shift) + ' closing</button></div></div></div>' +
+      '<div class="section-title">Recent closings</div><div id="crec">' + loadingHtml() + '</div>';
+    function calc() {
+      d.items.forEach(function (it, i) {
+        var c = $('[data-c="' + i + '"]', b).value, hq = $('[data-h="' + i + '"]', b).value, w = $('[data-w="' + i + '"]', b);
+        if (c === '' || hq === '') { w.textContent = '—'; return; }
+        var x = (parseFloat(c) || 0) - (parseFloat(hq) || 0);
+        w.innerHTML = x > 0 ? '<b style="color:var(--red)">' + num(x) + '</b>' : x < 0 ? '<span style="color:var(--orange)" title="Handover is more than closing">' + num(x) + '</span>' : '0';
+      });
+    }
+    $$('[data-c],[data-h]', b).forEach(function (x) { x.oninput = calc; }); calc();
+    function reopen(ov) { go('closing', Object.assign({ date: val('#cDate', b), shift: d.shift, outletId: val('#cOut', b) }, ov || {})); }
+    $('#cDate', b).onchange = function () { reopen(); };
+    if ($('#cOut', b).tagName === 'SELECT') $('#cOut', b).onchange = function () { reopen(); };
+    $$('#cShift button', b).forEach(function (x) { x.onclick = function () { reopen({ shift: x.dataset.s }); }; });
+    $('#cSave', b).onclick = function () {
+      var lines = d.items.map(function (it, i) { return { id: it.id, closing: $('[data-c="' + i + '"]', b).value, handover: $('[data-h="' + i + '"]', b).value, remarks: $('[data-r="' + i + '"]', b).value }; });
+      var btn = this; busy(btn, true, 'Saving…');
+      api('close.save', { outletId: val('#cOut', b), date: val('#cDate', b), shift: d.shift, handedTo: val('#cTo', b), lines: lines })
+        .then(function (r) { toast(r.message, 'ok'); reopen(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+    api('close.list', { outletId: val('#cOut', b) }).then(function (x) {
+      $('#crec', b).innerHTML = x.rows.length ? '<div class="list">' + x.rows.map(function (g, i) {
+        return '<div class="li"><div class="top" style="cursor:pointer" data-g="' + i + '"><div class="grow"><div class="title">' + h(g.date) + ' · ' + h(g.shift) + '</div><div class="small muted">' + h(g.outlet) + ' · ' + g.items + ' items · by ' + h(g.by) + (g.to ? ' → ' + h(g.to) : '') + '</div></div>' +
+          (g.wasteItems ? chip(g.wasteItems + ' with wastage', 'red') : chip('No wastage', 'green')) + icon('expand_more') + '</div>' +
+          '<div class="hide mt" data-gb="' + i + '"><div class="tbl-wrap"><table class="tbl"><tr><th>Item</th><th class="num">Closing</th><th class="num">Handover</th><th class="num">Wastage</th><th>Remarks</th></tr>' +
+          g.lines.map(function (l) { return '<tr><td class="hi">' + h(l.item) + '</td><td class="num">' + h(l.closing) + ' ' + h(l.unit) + '</td><td class="num">' + h(l.handover) + '</td><td class="num">' + h(l.wastage) + '</td><td>' + h(l.remarks) + '</td></tr>'; }).join('') + '</table></div></div></div>';
+      }).join('') + '</div>' : emptyHtml('fact_check', 'No closing in the last 7 days.');
+      $$('[data-g]', b).forEach(function (t) { t.onclick = function () { $('[data-gb="' + t.dataset.g + '"]', b).classList.toggle('hide'); }; });
+    }).catch(function (e) { $('#crec', b).innerHTML = errHtml(e); });
+  }).catch(function (e) { $('#cb', el).innerHTML = errHtml(e); });
+};
+
+/* ---------------- EXPENSES ---------------- */
+V.expenses = function (el, p) {
+  var month = p.month || monthISO();
+  el.innerHTML = pageHead('Expense Records', '',
+    '<input type="month" class="inp sm" id="em" value="' + month + '" style="width:auto"><button class="btn" id="eadd">' + icon('add') + 'Add expense</button>') + '<div id="eb">' + loadingHtml() + '</div>';
+  $('#em', el).onchange = function () { go('expenses', { month: this.value }); };
+  $('#eadd', el).onclick = addExpense;
+  function load(quiet) {
+    live('exp.list', { outletId: S.outlet, month: month }, function (d) {
+      $('#eb', el).innerHTML = '<div class="grid g3"><div class="tile"><div class="ic violet">' + icon('account_balance_wallet') + '</div><div><div class="t">Total this month</div><div class="v">' + money(d.total) + '</div><div class="d">' + d.rows.length + ' entries</div></div></div>' +
+        '<div class="tile"><div class="ic orange">' + icon('category') + '</div><div class="grow"><div class="t">By category</div><div class="d">' + (d.byCategory.slice(0, 4).map(function (c) { return h(c.name) + ' ' + money(c.amount); }).join('<br>') || '—') + '</div></div></div>' +
+        '<div class="tile"><div class="ic blue">' + icon('payments') + '</div><div class="grow"><div class="t">By payment mode</div><div class="d">' + (d.byMode.map(function (c) { return h(c.name) + ' ' + money(c.amount); }).join('<br>') || '—') + '</div></div></div></div>' +
+        (d.rows.length ? '<div class="tbl-wrap mt"><table class="tbl"><tr><th>Date</th><th>Category</th><th>Details</th><th>Paid to</th><th>Mode</th><th class="num">Amount</th><th>Bill</th><th>By</th></tr>' +
+          d.rows.map(function (r) {
+            return '<tr><td class="nowrap">' + h(r.date) + '</td><td>' + h(r.category) + '</td><td>' + h(r.desc) + (S.outlet === 'ALL' ? '<div class="small muted">' + h(r.outlet) + '</div>' : '') + '</td><td>' + h(r.paidTo) + '</td><td>' + h(r.mode) + '</td>' +
+              '<td class="num b">' + money(r.amount) + '</td><td>' + (r.fileId ? '<button class="btn sm ghost" data-b="' + h(r.id) + '">' + icon('image') + '</button>' : h(r.billNo || '—')) + '</td><td class="small">' + h(r.by) + '</td></tr>';
+          }).join('') + '<tfoot><tr><td colspan="5">Total</td><td class="num">' + money(d.total) + '</td><td colspan="2"></td></tr></tfoot></table></div>'
+          : '<div class="card mt">' + emptyHtml('receipt_long', 'No expense recorded in this month.') + '</div>');
+      $$('[data-b]', el).forEach(function (x) { x.onclick = function () { viewFile('exp', x.dataset.b, 'Expense bill'); }; });
+    }, { quiet: quiet }).catch(function (e) { $('#eb', el).innerHTML = errHtml(e); });
+  }
+  function addExpense() {
+    var fp;
+    var m = modal({ title: 'Add expense', wide: true, body: loadingHtml(), actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, e2, btn) {
+      if (fp.busy()) return toast('Wait for the bill photo.');
+      var f = fp.get();
+      busy(btn, true);
+      api('exp.save', { outletId: val('#xOut', e2), date: val('#xd', e2), category: val('#xc', e2), desc: val('#xdesc', e2), paidTo: val('#xp', e2),
+        amount: val('#xa', e2), mode: val('#xm', e2), billNo: val('#xb', e2), fileId: f ? f.fileId : '' })
+        .then(function (r) { close(); toast(r.message, 'ok'); load(true); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    } }] });
+    cached('expMeta', function () { return api('exp.meta'); }).then(function (meta) {
+      $('.modal-b', m.el).innerHTML = '<div class="form-grid">' + outletField('xOut', false) +
+        '<div class="field"><label>Date</label><input type="date" class="inp" id="xd" value="' + todayISO() + '" max="' + todayISO() + '"></div>' +
+        '<div class="field"><label>Category *</label><select class="inp" id="xc"><option value="">Pick…</option>' + meta.categories.map(function (c) { return '<option>' + h(c) + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label>Amount (₹) *</label><input class="inp" id="xa" inputmode="decimal"></div>' +
+        '<div class="field full"><label>What for *</label><input class="inp" id="xdesc" placeholder="e.g. Porter for gas cylinder"></div>' +
+        '<div class="field"><label>Paid to</label><input class="inp" id="xp"></div>' +
+        '<div class="field"><label>Payment mode</label><select class="inp" id="xm">' + meta.modes.map(function (c) { return '<option>' + h(c) + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label>Bill number</label><input class="inp" id="xb"></div><div class="full" id="xfb"></div></div>' +
+        (meta.billAbove !== '' ? '<div class="small muted mt">A bill photo is required above ' + money(meta.billAbove) + '.</div>' : '');
+      fp = filePicker($('#xfb', m.el), 'expense', { label: 'Bill photo' });
+    }).catch(function (e) { $('.modal-b', m.el).innerHTML = errHtml(e); });
+  }
+  load();
+  if (p.add) addExpense();
+};
+
+/* ---------------- DSR ---------------- */
+V.dsr = function (el, p) {
+  el.innerHTML = pageHead('DSR – Daily Sales Report', '') + '<div id="rb">' + loadingHtml() + '</div>';
+  var outletId = p.outletId || singleOutlet();
+  api('dsr.form', { outletId: outletId, date: p.date || '' }).then(function (d) {
+    var b = $('#rb', el), v = d.values || {};
+    var sales = d.columns.filter(function (c) { return c.section === 'sales' && c.input; });
+    var exps = d.columns.filter(function (c) { return c.section === 'expenses' && c.input; });
+    function inputs(list) {
+      return list.map(function (c) {
+        return '<div class="field"><label>' + h(c.header) + (c.required ? ' *' : '') + '</label><input class="inp" inputmode="decimal" data-k="' + c.key + '" value="' + h(v[c.key] === undefined || v[c.key] === null ? '' : v[c.key]) + '"></div>';
+      }).join('');
+    }
+    var locked = d.values && !d.reedit;
+    b.innerHTML = '<div class="card"><div class="row">' + outletField('rOut', true, d.outletId) +
+      '<div class="field" style="margin:0"><label>Report date</label><input type="date" class="inp" id="rDate" value="' + d.date + '" min="' + d.minDate + '" max="' + todayISO() + '"></div></div>' +
+      (d.values ? '<div class="pill-note mt">Already submitted' + (v.submittedBy ? ' by ' + h(v.submittedBy) : '') + (v.lastUpdated ? ' · ' + h(v.lastUpdated) : '') + (locked ? ' — editing is not allowed.' : ' — submitting again will update it.') + '</div>' : '') + '</div>' +
+      '<div class="grid g2 mt"><div class="card"><h3>' + icon('payments') + ' Daily sales</h3><div class="form-grid">' + inputs(sales) + '</div>' +
+      '<div class="row"><b class="grow">Total sales</b><b id="rTs">₹0</b></div><div class="row small muted"><span class="grow">Avg sale per order</span><span id="rAvg">—</span></div></div>' +
+      '<div class="card"><h3>' + icon('shopping_bag') + ' Daily expenses</h3><div class="form-grid">' + inputs(exps) + '</div><div class="row"><b class="grow">Total expenses</b><b id="rTe">₹0</b></div></div></div>' +
+      '<div class="card mt"><label class="check" style="align-items:flex-start"><input type="checkbox" id="rDecl"' + (d.values ? ' checked' : '') + '><span class="small">' + h(d.declaration) + '</span></label>' +
+      '<div class="row mt"><span class="grow"></span><button class="btn green" id="rSave"' + (locked ? ' disabled' : '') + '>' + icon('send') + 'Submit DSR</button></div></div>' +
+      '<div class="section-title">Recent entries</div>' + (d.recent.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Date</th><th class="num">Total sales</th><th class="num">Orders</th><th class="num">Avg / order</th><th class="num">Total expenses</th><th>By</th></tr>' +
+        d.recent.map(function (r) { return '<tr class="click" data-d="' + h(r.dateKey) + '"><td>' + h(r.dateText) + '</td><td class="num b">' + money(r.totalSales) + '</td><td class="num">' + num(r.totalOrders) + '</td><td class="num">' + money(r.avgSalePerOrder) + '</td><td class="num">' + money(r.expenses) + '</td><td class="small">' + h(r.submittedBy) + '</td></tr>'; }).join('') + '</table></div>' : emptyHtml('point_of_sale', 'No entry yet.'));
+    function calc() {
+      function sumOf(keys) { return keys.reduce(function (s, k) { var i = $('[data-k="' + k + '"]', b); return s + (i ? parseFloat(i.value) || 0 : 0); }, 0); }
+      var ts = sumOf(['cash', 'upi', 'online', 'due', 'virtualWallet']), te = sumOf(['cashExp', 'upiExp']), o = sumOf(['totalOrders']);
+      $('#rTs', b).textContent = money(ts); $('#rTe', b).textContent = money(te); $('#rAvg', b).textContent = o ? money(ts / o) : '—';
+    }
+    $$('[data-k]', b).forEach(function (i) { i.oninput = calc; if (locked) i.disabled = true; }); calc();
+    function reopen() { go('dsr', { date: val('#rDate', b), outletId: val('#rOut', b) }); }
+    $('#rDate', b).onchange = reopen;
+    if ($('#rOut', b).tagName === 'SELECT') $('#rOut', b).onchange = reopen;
+    $$('[data-d]', b).forEach(function (r) { r.onclick = function () { go('dsr', { date: r.dataset.d, outletId: val('#rOut', b) }); }; });
+    $('#rSave', b).onclick = function () {
+      if (!$('#rDecl', b).checked) return toast('Tick the self-declaration first.', 'bad');
+      var values = {}; $$('[data-k]', b).forEach(function (i) { values[i.dataset.k] = i.value; });
+      var btn = this;
+      confirmBox('Submit DSR?', 'You are submitting the report for <b>' + fmtISO(val('#rDate', b)) + '</b>. Please check the date.', 'Yes, submit').then(function (ok) {
+        if (!ok) return;
+        busy(btn, true, 'Submitting…');
+        api('dsr.submit', { outletId: val('#rOut', b), date: val('#rDate', b), values: values, declaration: true })
+          .then(function (r) { toast(r.message, 'ok'); reopen(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      });
+    };
+  }).catch(function (e) { $('#rb', el).innerHTML = errHtml(e); });
+};
+V.item_master = function (el, p) {
+  var tab = p.tab || 'grn', nav = S.nav;
+  el.innerHTML = pageHead('Item Master', '', '<button class="btn sm ghost" id="imR">' + icon('sync') + 'Refresh</button>') +
+    tabsHtml([['grn', 'GRN'], ['items', 'Items'], ['requests', 'Active / Inactive requests <span class="chip grey" id="imN">…</span>']], tab) + '<div id="imB"></div>';
+  var B = $('#imB', el);
+  bindTabs(el, function (t) { tab = t; S.params.tab = t; show(); });
+  $('#imR', el).onclick = function () { delete S.cache.imList; delete S.cache.imMeta; show(); };
+  function list() { return cached('imList', function () { return api('item.list'); }); }
+  function meta() { return cached('imMeta', function () { return api('item.grnMeta'); }); }
+  function counter() {
+    api('item.requests').then(function (r) {
+      var n = r.list.filter(function (x) { return x.status === 'Pending'; }).length, c = $('#imN', el);
+      if (c) { c.textContent = n + ' pending'; c.className = 'chip ' + (n ? 'amber' : 'grey'); }
+    }).catch(function () {});
+  }
+  function show() {
+    if (S.nav !== nav) return;
+    B.innerHTML = loadingHtml();
+    if (tab === 'items') return itemsTab();
+    if (tab === 'requests') return requestsTab();
+    grnTab();
+  }
+
+  function grnTab() {
+    meta().then(function (M) {
+      var lines = [], byKey = {};
+      M.items.forEach(function (x) { byKey[(x.name + ' · ' + x.code).toLowerCase()] = x; byKey[x.code.toLowerCase()] = x; });
+      B.innerHTML = '<div class="card"><h3>' + icon('inventory_2') + ' New GRN · ' + h(M.outlet) + '</h3><div class="form-grid">' +
+        '<div class="field"><label>GRN date</label><input type="date" class="inp" id="gD" value="' + todayISO() + '" max="' + todayISO() + '"></div>' +
+        '<div class="field"><label>Supplier *</label><input class="inp" id="gS" list="gSL"><datalist id="gSL">' + M.suppliers.map(function (s0) { return '<option value="' + h(s0) + '">'; }).join('') + '</datalist></div>' +
+        '<div class="field"><label>Bill number' + (M.billNoRequired ? ' *' : '') + '</label><input class="inp" id="gN"></div>' +
+        '<div class="field"><label>Remarks</label><input class="inp" id="gR"></div>' +
+        '<div class="field full"><div id="gF"></div></div></div>' +
+        '<div class="field"><label>Add an item</label><input class="inp" id="gI" list="gIL" placeholder="Item name or code"><datalist id="gIL">' +
+        M.items.map(function (x) { return '<option value="' + h(x.name + ' · ' + x.code) + '">' + h(x.status) + '</option>'; }).join('') + '</datalist></div>' +
+        '<div id="gL"></div><div class="row gap6 mt"><b class="grow" id="gT"></b><button class="btn green" id="gSave">' + icon('save') + 'Save GRN</button></div></div>' +
+        '<div class="section-title">GRNs · last 30 days</div><div id="gH">' + loadingHtml() + '</div>';
+      var fp = filePicker($('#gF', B), 'bill', { label: 'Bill photo', required: M.billRequired });
+      function total() {
+        var tot = lines.reduce(function (s0, l) { return s0 + (l.qty && l.rate ? l.qty * l.rate : 0); }, 0);
+        $('#gT', B).textContent = lines.length + ' item' + (lines.length === 1 ? '' : 's') + (tot ? ' · ' + money(tot) : '');
+      }
+      function paint() {
+        var box = $('#gL', B);
+        box.innerHTML = lines.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Item</th><th>Unit</th><th class="num">Qty received</th><th class="num">Rate (₹)</th><th class="num">Amount</th><th></th></tr></thead><tbody>' +
+          lines.map(function (l, i) {
+            return '<tr><td><b>' + h(l.name) + '</b><div class="tiny muted">' + h(l.code + (l.status && l.status !== 'Active' ? ' · ' + l.status : '')) + '</div></td><td>' + h(l.unit) + '</td>' +
+              '<td class="num"><input class="inp sm" style="width:90px;text-align:right" inputmode="decimal" data-q="' + i + '" value="' + h(l.qty || '') + '"></td>' +
+              '<td class="num"><input class="inp sm" style="width:90px;text-align:right" inputmode="decimal" data-r="' + i + '" value="' + h(l.rate || '') + '"></td>' +
+              '<td class="num" data-a="' + i + '">' + (l.qty && l.rate ? money(l.qty * l.rate) : '—') + '</td><td><button class="icon-btn" data-x="' + i + '" title="Remove">' + icon('delete') + '</button></td></tr>';
+          }).join('') + '</tbody></table></div>' : '<div class="card">' + emptyHtml('add_shopping_cart', 'Add the items received.') + '</div>';
+        total();
+        function upd(i) { var l = lines[i], c = $('[data-a="' + i + '"]', box); if (c) c.textContent = l.qty && l.rate ? money(l.qty * l.rate) : '—'; total(); }
+        $$('[data-q]', box).forEach(function (x) { x.oninput = function () { lines[+x.dataset.q].qty = parseFloat(x.value) || ''; upd(+x.dataset.q); }; });
+        $$('[data-r]', box).forEach(function (x) { x.oninput = function () { lines[+x.dataset.r].rate = parseFloat(x.value) || ''; upd(+x.dataset.r); }; });
+        $$('[data-x]', box).forEach(function (x) { x.onclick = function () { lines.splice(+x.dataset.x, 1); paint(); }; });
+      }
+      $('#gI', B).onchange = function () {
+        var it = byKey[this.value.trim().toLowerCase()]; if (!it) return;
+        if (lines.some(function (l) { return l.code === it.code; })) { toast(it.name + ' is already on this GRN.'); this.value = ''; return; }
+        lines.push({ code: it.code, name: it.name, unit: it.unit, status: it.status, qty: '', rate: it.rate || '' });
+        if (!val('#gS', B) && it.supplier) $('#gS', B).value = it.supplier;
+        this.value = ''; paint();
+        var q = $$('[data-q]', B); if (q.length) q[q.length - 1].focus();
+      };
+      $('#gSave', B).onclick = function () {
+        var f = fp.get(), bt = this;
+        if (!lines.length) return toast('Add at least one item.', 'bad');
+        if (!val('#gS', B)) return toast('Enter the supplier.', 'bad');
+        if (M.billNoRequired && !val('#gN', B)) return toast('Enter the bill number.', 'bad');
+        if (fp.busy()) return toast('Wait for the bill photo to upload.');
+        if (M.billRequired && !f) return toast('Attach the bill photo.', 'bad');
+        if (lines.some(function (l) { return !(l.qty > 0); })) return toast('Enter the quantity received on every line.', 'bad');
+        busy(bt, true, 'Saving…');
+        api('item.grnSave', { date: val('#gD', B), supplier: val('#gS', B), billNo: val('#gN', B), remarks: val('#gR', B), billFileId: f ? f.fileId : '',
+          lines: lines.map(function (l) { return { code: l.code, qty: l.qty, rate: l.rate }; }) })
+          .then(function (r) { toast(r.message, 'ok'); grnTab(); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+      };
+      paint();
+      api('item.grns', {}).then(function (G) {
+        recList($('#gH', B), G.list, {
+          title: function (g) { return h(g.no) + ' · ' + h(g.supplier); },
+          sub: function (g) { return h(g.date + ' · ' + g.lines.length + ' item' + (g.lines.length === 1 ? '' : 's') + (g.billNo ? ' · bill ' + g.billNo : '') + ' · ' + g.by); },
+          right: function (g) { return g.amount ? '<b>' + money(g.amount) + '</b>' : ''; },
+          empty: 'No GRN in the last 30 days.', emptyIcon: 'inventory_2',
+          body: function (x, g) {
+            x.innerHTML = '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>' +
+              g.lines.map(function (l) { return '<tr><td>' + h(l.name) + '<div class="tiny muted">' + h(l.code + (l.remarks ? ' · ' + l.remarks : '')) + '</div></td><td class="num">' + h(l.qty + ' ' + l.unit) + '</td><td class="num">' + (l.rate ? money(l.rate) : '—') + '</td><td class="num">' + (l.amount ? money(l.amount) : '—') + '</td></tr>'; }).join('') +
+              '</tbody></table></div>' + (g.fileId ? '<button class="btn sm ghost mt" data-bill>' + icon('image') + 'View bill</button>' : '');
+            if ($('[data-bill]', x)) $('[data-bill]', x).onclick = function () { viewFile('stock', g.entry, 'Bill · ' + g.no); };
+          }
+        });
+      }).catch(function (e) { $('#gH', B).innerHTML = errHtml(e); });
+    }).catch(function (e) { B.innerHTML = errHtml(e); });
+  }
+
+  function itemsTab() {
+    list().then(function (D) {
+      var st = { status: 'Active', cat: '', q: '' }, cats = {};
+      D.items.forEach(function (x) { var c0 = x.values['Category']; if (c0) cats[c0] = 1; });
+      var sts = ['Active', 'Inactive', 'Self', 'Under Review'].filter(function (s0) { return D.counts[s0]; });
+      Object.keys(D.counts).forEach(function (s0) { if (sts.indexOf(s0) < 0) sts.push(s0); });
+      B.innerHTML = '<div class="fbar"><div class="ff"><label>Status</label><select class="inp sm" id="iS"><option value="">All (' + D.items.length + ')</option>' +
+        sts.map(function (s0) { return '<option value="' + h(s0) + '"' + (s0 === st.status ? ' selected' : '') + '>' + h(s0) + ' (' + D.counts[s0] + ')</option>'; }).join('') + '</select></div>' +
+        '<div class="ff"><label>Category</label><select class="inp sm" id="iC"><option value="">All</option>' + Object.keys(cats).sort().map(function (c0) { return '<option>' + h(c0) + '</option>'; }).join('') + '</select></div>' +
+        '<div class="ff grow"><label>Search</label><input class="inp sm" id="iQ" placeholder="Item name, code, supplier…"></div></div><div id="iL"></div>';
+      function paint() {
+        var L = D.items.filter(function (x) {
+          if (st.status && x.status !== st.status) return false;
+          if (st.cat && x.values['Category'] !== st.cat) return false;
+          return !st.q || (x.name + ' ' + x.code + ' ' + (x.values['Suppliers'] || '')).toLowerCase().indexOf(st.q) >= 0;
+        });
+        recList($('#iL', B), L, {
+          title: function (x) { return h(x.name); },
+          sub: function (x) { return h([x.code, x.values['Category'], x.values['Sub-Category'], x.values['Unit']].filter(Boolean).join(' · ')); },
+          right: function (x) { return (x.pending ? chip('Pending: make ' + x.pending.to.toLowerCase(), 'amber') : '') + chip(x.status || 'No status', x.status === 'Active' ? 'green' : x.status === 'Inactive' ? 'grey' : 'blue'); },
+          empty: 'No item.', emptyIcon: 'category',
+          body: function (bx, x) { itemBody(bx, x); }
+        });
+      }
+      function itemBody(bx, x) {
+        var edit = D.fields.filter(function (f) { return !f.locked; });
+        bx.innerHTML = kvHtml([['Item code', x.code], ['Status', x.status || '—'], ['Profit %', x.values['Profit %'] === '' || x.values['Profit %'] === undefined ? '—' : (typeof x.values['Profit %'] === 'number' ? (Math.round(x.values['Profit %'] * 10000) / 100) + '%' : x.values['Profit %'])]]) +
+          (D.canEdit ? '<div class="form-grid mt">' + edit.map(function (f) {
+            var v = x.values[f.name]; v = v === undefined || v === null ? '' : v;
+            var opts = D.options[f.name];
+            var inp = opts && opts.length ? '<input class="inp sm" data-f="' + h(f.name) + '" list="imo_' + h(f.name.replace(/\W/g, '')) + '" value="' + h(v) + '">' :
+              '<input class="inp sm" data-f="' + h(f.name) + '"' + (f.num ? ' inputmode="decimal"' : '') + ' value="' + h(v) + '">';
+            return '<div class="field"><label>' + h(f.name) + '</label>' + inp + '</div>';
+          }).join('') + '</div>' + Object.keys(D.options).map(function (k) { return '<datalist id="imo_' + h(k.replace(/\W/g, '')) + '">' + D.options[k].map(function (o) { return '<option value="' + h(o) + '">'; }).join('') + '</datalist>'; }).join('') +
+          '<div class="row gap6"><span class="grow"></span><button class="btn sm green" data-sv>' + icon('save') + 'Save item</button></div>' : '') +
+          '<div class="card mt" style="background:var(--bg)"><b>' + icon('rule') + ' Active / Inactive</b>' +
+          (x.pending ? '<div class="small mt">' + h(x.pending.id + ' · make ' + x.pending.to.toLowerCase() + ' — pending with MIS / Director') + '</div>' :
+            '<div class="form-grid mt"><div class="field"><label>Change to</label><select class="inp sm" data-to>' + D.statuses.filter(function (s0) { return s0 !== x.status; }).map(function (s0) { return '<option>' + h(s0) + '</option>'; }).join('') + '</select></div>' +
+            '<div class="field"><label>Reason</label><input class="inp sm" data-rs></div></div><div class="row gap6"><span class="grow"></span><button class="btn sm" data-rq>' + icon(D.canApprove ? 'check' : 'send') + (D.canApprove ? 'Change status' : 'Send for approval') + '</button></div>') + '</div>';
+        if ($('[data-sv]', bx)) $('[data-sv]', bx).onclick = function () {
+          var up = {}, bt = this;
+          $$('[data-f]', bx).forEach(function (i0) { var k = i0.dataset.f, ov = x.values[k]; ov = ov === undefined || ov === null ? '' : String(ov); if (i0.value.trim() !== ov.trim()) up[k] = i0.value.trim(); });
+          if (!Object.keys(up).length) return toast('Nothing changed.');
+          busy(bt, true);
+          api('item.save', { code: x.code, updates: up }).then(function (r) { toast(r.message, 'ok'); Object.keys(up).forEach(function (k) { x.values[k] = up[k]; }); if (up['Item Name']) x.name = up['Item Name']; delete S.cache.imMeta; busy(bt, false); })
+            .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+        };
+        if ($('[data-rq]', bx)) $('[data-rq]', bx).onclick = function () {
+          var bt = this, to = $('[data-to]', bx).value, rs = val('[data-rs]', bx);
+          if (!rs) return toast('Write the reason.', 'bad');
+          busy(bt, true);
+          api('item.request', { code: x.code, to: to, reason: rs }).then(function (r) { toast(r.message, 'ok'); delete S.cache.imList; delete S.cache.imMeta; counter(); itemsTab(); })
+            .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+        };
+      }
+      $('#iS', B).onchange = function () { st.status = this.value; paint(); };
+      $('#iC', B).onchange = function () { st.cat = this.value; paint(); };
+      $('#iQ', B).oninput = debounce(function () { st.q = val('#iQ', B).toLowerCase(); paint(); }, 200);
+      paint();
+    }).catch(function (e) { B.innerHTML = errHtml(e); });
+  }
+
+  function requestsTab() {
+    api('item.requests').then(function (R) {
+      var show0 = 'Pending';
+      B.innerHTML = '<div class="fbar"><div class="ff"><label>Filter By</label><select class="inp sm" id="rF"></select></div></div><div id="rL"></div>';
+      function paint() {
+        var n = function (s0) { return R.list.filter(function (x) { return !s0 || x.status === s0; }).length; };
+        $('#rF', B).innerHTML = [['Pending', 'Pending'], ['Approved', 'Approved'], ['Rejected', 'Rejected'], ['', 'All']].map(function (o) {
+          return '<option value="' + o[0] + '"' + (o[0] === show0 ? ' selected' : '') + '>' + o[1] + ' (' + n(o[0]) + ')</option>'; }).join('');
+        var L = R.list.filter(function (x) { return !show0 || x.status === show0; });
+        recList($('#rL', B), L, {
+          title: function (x) { return h(x.name); },
+          sub: function (x) { return h(x.code + ' · make ' + x.to.toLowerCase() + ' · ' + x.by + ' · ' + x.at); },
+          right: function (x) { return chip(x.status === 'Pending' ? 'Pending with MIS / Director' : x.status, x.status === 'Pending' ? 'amber' : x.status === 'Approved' ? 'green' : 'red'); },
+          empty: show0 === 'Pending' ? 'No request waiting.' : 'No request.', emptyIcon: 'rule',
+          body: function (bx, x) {
+            bx.innerHTML = kvHtml([['Request', x.id], ['Item', x.code + ' · ' + x.name], ['Change', x.from + ' → ' + x.to], ['Reason', x.reason], ['Requested by', x.by + ' · ' + x.at],
+              x.status !== 'Pending' ? [x.status + ' by', x.decidedBy + ' · ' + x.decidedAt] : null, x.remarks ? ['Remarks', x.remarks] : null]) +
+              (R.canApprove && x.status === 'Pending' ? '<div class="row gap6 mt"><input class="inp sm grow" data-rm placeholder="Remarks (needed to reject)"><button class="btn sm red" data-d="REJECTED">' + icon('close') + 'Reject</button><button class="btn sm green" data-d="APPROVED">' + icon('check') + 'Approve</button></div>' : '');
+            $$('[data-d]', bx).forEach(function (bt) {
+              bt.onclick = function () {
+                var rm = val('[data-rm]', bx);
+                if (bt.dataset.d === 'REJECTED' && !rm) return toast('Write why it is rejected.', 'bad');
+                busy(bt, true);
+                api('item.decide', { id: x.id, decision: bt.dataset.d, remarks: rm }).then(function (r) { toast(r.message, 'ok'); delete S.cache.imList; dcDel('appr.hub', {}); counter(); requestsTab(); })
+                  .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+              };
+            });
+          }
+        });
+      }
+      $('#rF', B).onchange = function () { show0 = this.value; paint(); };
+      paint();
+    }).catch(function (e) { B.innerHTML = errHtml(e); });
+  }
+  counter();
+  show();
+};
+</script>

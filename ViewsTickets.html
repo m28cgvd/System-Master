@@ -1,0 +1,255 @@
+<script>
+var TK_STAGE = { new: ['Not assigned', 'orange'], assigned: ['Pending', 'blue'], overdue: ['Overdue', 'red'], closed: ['Done', 'green'] };
+var TK_DOT = { new: 'warn', assigned: 'up', overdue: 'bad', closed: 'ok' };
+var TK_PRIO_CHIP = { High: 'red', Mid: 'orange', Low: 'grey' };
+function tkMeta() { return cached('tkMeta2', function () { return api('tk.meta'); }); }
+function tkSteps(t) {
+  var s = [['Raised', true, t.atText], ['Assigned', !!t.assigned, t.assigned ? t.assigned + (t.planResText ? ' · by ' + t.planResText : '') : ''], ['Done', t.closed, t.actualText]];
+  return '<div class="tk-steps">' + s.map(function (x, i) {
+    var cur = !x[1] && (i === 0 || s[i - 1][1]);
+    return '<div class="tk-step' + (x[1] ? ' done' : cur ? ' now' : '') + '"><span class="dot">' + icon(x[1] ? 'check' : cur ? 'hourglass_top' : 'more_horiz') + '</span>' +
+      '<div><b>' + x[0] + '</b>' + (x[2] ? '<div class="tiny muted">' + h(x[2]) + '</div>' : '') + '</div></div>';
+  }).join('<i class="tk-line"></i>') + '</div>';
+}
+function norm(x) { return String(x || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function tkPeopleOpts(P, selKey) {
+  var groups = {}, order = [];
+  (P || []).forEach(function (p) { if (!groups[p.group]) { groups[p.group] = []; order.push(p.group); } groups[p.group].push(p); });
+  order.sort(function (a, b) { return ((a === 'Outlet Incharge') - (b === 'Outlet Incharge')) || a.localeCompare(b); });
+  return '<option value="">Pick a person…</option>' + order.map(function (g) {
+    return '<optgroup label="' + h(g) + '">' + groups[g].slice().sort(function (a, b) { return g === 'Outlet Incharge' ? a.place.localeCompare(b.place) : a.name.localeCompare(b.name); }).map(function (p) {
+      var k = p.id + '|' + p.name;
+      return '<option value="' + h(k) + '"' + (k === selKey ? ' selected' : '') + '>' + h(g === 'Outlet Incharge' ? p.place + ' — ' + p.name : p.name + (p.designation ? ' · ' + p.designation : '')) + '</option>';
+    }).join('') + '</optgroup>';
+  }).join('');
+}
+function tkRaiseForm(box, M, pre, done) {
+  pre = pre || {};
+  var ck = pre.checklist || null, task = pre.task || null, me = M.me || {}, P = M.people || [];
+  var inc = P.filter(function (p) { return p.group === 'Outlet Incharge' && p.outletId === (pre.outletId || me.outletId); })[0];
+  var def = ck && inc ? inc.id + '|' + inc.name : '';
+  box.innerHTML = (ck ? '<div class="note mb">' + icon('checklist') + ' Checklist task <b>' + h(ck.taskId) + '</b> — ' + h(ck.task) + (ck.planned ? ' · planned ' + h(ck.planned) : '') + '</div>' : '') +
+    (task ? '<div class="note mb">' + icon('task_alt') + ' Delegated task <b>' + h(task.id) + '</b> — ' + h(task.title) + '</div>' : '') +
+    '<div class="form-grid"><div class="field"><label>What is it about? *</label><select class="inp" data-k="type">' + M.types.map(function (t) { return '<option>' + h(t) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="field"><label>Where?</label><select class="inp" data-k="outletId">' + M.places.map(function (p) {
+      return '<option value="' + h(p.id) + '"' + (p.id === (pre.outletId || me.outletId) ? ' selected' : '') + '>' + h(p.name) + '</option>'; }).join('') + '</select></div></div>' +
+    '<div class="field"><label>Give it to *</label><select class="inp" data-k="who">' + tkPeopleOpts(P, def) + '</select></div>' +
+    (ck || task ? '' : '<div class="field"><label>Short title *</label><input class="inp" data-k="subject" maxlength="120" placeholder="e.g. Ice machine not cooling" value="' + h(pre.subject || '') + '"></div>') +
+    '<div class="field"><label>' + (ck || task ? 'Why could it not be done? *' : 'Details') + '</label><textarea class="inp" data-k="details" rows="3" placeholder="What happened, since when, anything that helps">' + h(pre.details || '') + '</textarea></div>' +
+    '<div class="field"><label>How urgent?</label><div class="row gap6">' + ['', 'High', 'Mid', 'Low'].map(function (p) {
+      return '<label class="qf' + (p === '' ? ' on' : '') + '"><input type="radio" name="tkp" value="' + p + '" hidden' + (p === '' ? ' checked' : '') + '>' + (p || 'Not sure') + '</label>'; }).join('') + '</div></div>' +
+    '<div data-file></div><div class="small muted mt">' + icon('location_on') + ' <b>' + h(me.location || '—') + '</b></div>';
+  var pk = filePicker($('[data-file]', box), 'ticket', { label: 'Photo (optional)' });
+  $$('input[name=tkp]', box).forEach(function (r) { r.onchange = function () { $$('input[name=tkp]', box).forEach(function (x) { x.parentNode.classList.toggle('on', x.checked); }); }; });
+  return {
+    send: function (btn) {
+      var g = function (k) { return val('[data-k="' + k + '"]', box); };
+      if (pk.busy()) return toast('Wait for the photo to finish uploading.');
+      if (!g('who')) return toast('Pick the person the issue goes to.', 'bad');
+      if ((ck || task) ? !g('details') : !g('subject')) return toast((ck || task) ? 'Write why it could not be done.' : 'Write a short title.', 'bad');
+      var f = pk.get(), pr = ($('input[name=tkp]:checked', box) || {}).value || '', w = g('who').split('|');
+      busy(btn, true, 'Sending…');
+      return api('tk.raise', { type: g('type'), outletId: g('outletId'), subject: ck ? ck.task : task ? task.title : g('subject'), details: g('details'), priority: pr, fileId: f ? f.fileId : '',
+        checklist: ck, task: task ? { id: task.id } : null, assignId: w[0], assignName: w.slice(1).join('|') })
+        .then(function (r) { busy(btn, false); toast(r.message, 'ok'); dcDel('tk.list', {}); if (done) done(r); return true; })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); return false; });
+    }
+  };
+}
+function tkRaiseModal(pre) {
+  modal({ title: pre && pre.checklist ? 'Raise an issue for this task' : pre && pre.task ? 'Raise an issue for this task' : 'Raise an issue', body: '<div data-rf>' + loadingHtml() + '</div>', sticky: true,
+    onOpen: function (m) {
+      tkMeta().then(function (M) { m.form = tkRaiseForm($('[data-rf]', m), M, pre); }).catch(function (e) { $('[data-rf]', m).innerHTML = errHtml(e); });
+    },
+    actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('send') + 'Raise issue', cls: 'green', click: function (close, m, btn) {
+      if (!m.form) return;
+      var p = m.form.send(btn);
+      if (p && p.then) p.then(function (ok) { if (ok) close(); });
+    } }] });
+}
+
+V.tickets = function (el, p) {
+  var mon = (function () { var d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return isoOf(d); })();
+  var L = null, st = S.cache.tkSt || (S.cache.tkSt = { show: p.show || 'pending', prio: '', loc: '', q: '', from: mon, to: todayISO() }), view = p.view || '', nav = S.nav, ticked = [];
+  if (p.show) st.show = p.show;
+  el.innerHTML = pageHead('Issues', '', '<button class="btn sm ghost" id="tkR">' + icon('sync') + 'Refresh</button>') + '<div id="tkB">' + loadingHtml() + '</div>';
+  var B = $('#tkB', el);
+  function alive() { return S.nav === nav && document.body.contains(B); }
+  function load(force) {
+    if (force) return api('tk.list', { force: true }).then(function (d) { L = d; dcSet(dcKey('tk.list', {}), d); paint(); });
+    return live('tk.list', {}, function (d) { L = d; paint(); }, { alive: alive }).catch(function (e) { if (!L) B.innerHTML = errHtml(e); });
+  }
+  $('#tkR', el).onclick = function () { var b = this; busy(b, true); load(true).then(function () { busy(b, false); }).catch(function (e) { busy(b, false); toast(e.message, 'bad'); }); };
+  function paint() {
+    if (view === 'raise') return raise();
+    if (!L) return;
+    if (!st.fromSet) {
+      var old = L.list.filter(function (t) { return !t.closed; }).map(dayOf).filter(Boolean).sort()[0];
+      st.from = old && old < mon ? old : mon;
+    }
+    var C = counts();
+    B.innerHTML = (L.errors || []).map(function (e) { return '<div class="warn mb">' + icon('error') + ' ' + h(e) + '</div>'; }).join('') +
+      '<div id="tkC"></div><div class="fbar">' +
+      '<div class="ff"><label>Raised from</label><input type="date" class="inp sm" id="tkF" value="' + h(st.from) + '"></div>' +
+      '<div class="ff"><label>To</label><input type="date" class="inp sm" id="tkT" value="' + h(st.to) + '"></div>' +
+      '<div class="ff"><label>Filter By</label><select class="inp sm" id="tkS">' + showOpts(C) + '</select></div>' +
+      '<div class="ff"><label>Priority</label><select class="inp sm" id="tkP"><option value="">All</option>' + (L.prios || ['High', 'Mid', 'Low']).map(function (x) { return '<option' + (x === st.prio ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select></div>' +
+      (L.wide ? '<div class="ff"><label>Location</label><select class="inp sm" id="tkL"><option value="">All</option>' + (L.locations || []).map(function (x) { return '<option' + (x === st.loc ? ' selected' : '') + '>' + h(x) + '</option>'; }).join('') + '</select></div>' : '') +
+      '<div class="ff grow"><label>Search</label><input class="inp sm" id="tkQ" placeholder="Issue ID, task, name…" value="' + h(st.q) + '"></div></div><div id="tkList"></div>';
+    var od = {};
+    inRange().forEach(function (t) { if (!t.closed && t.stage === 'overdue') od[t.outlet || 'Other'] = (od[t.outlet || 'Other'] || 0) + 1; });
+    hubCards($('#tkC', B), [
+      { key: 'all', icon: 'report_problem', label: 'Issues', value: C.all, sub: C.pending + ' pending · ' + C.overdue + ' overdue · ' + rangeText() },
+      S.boot.perms.director ? { key: 'overdue', icon: 'schedule', label: 'Overdue', value: C.overdue, sub: Object.keys(od).sort().map(function (k) { return h(k) + ' ' + od[k]; }).join(' · ') || 'Nothing overdue' }
+        : { key: 'raise', icon: 'add_circle', label: 'Raise Issue', value: icon('chevron_right'), sub: 'Any other problem' }
+    ], function (k) {
+      if (k === 'raise') { view = 'raise'; S.params.view = 'raise'; return paint(); }
+      st.show = k === 'overdue' ? 'overdue' : 'all'; $('#tkS', B).value = st.show; rows();
+    });
+    $('#tkS', B).onchange = function () { st.show = this.value; rows(); };
+    $('#tkF', B).onchange = function () { st.from = this.value || mon; st.fromSet = !!this.value; paint(); };
+    $('#tkT', B).onchange = function () { st.to = this.value || todayISO(); paint(); };
+    $('#tkP', B).onchange = function () { st.prio = this.value; rows(); };
+    if ($('#tkL', B)) $('#tkL', B).onchange = function () { st.loc = this.value; rows(); };
+    $('#tkQ', B).oninput = debounce(function () { st.q = val('#tkQ', B).toLowerCase(); rows(); }, 200);
+    rows();
+  }
+  function dayOf(t) { return t.at ? isoOf(new Date(t.at)) : ''; }
+  function inRange() { return L.list.filter(function (t) { var d = dayOf(t); return !d || (d >= st.from && d <= st.to); }); }
+  function rangeText() { return fmtISO(st.from) + ' – ' + fmtISO(st.to); }
+  function counts() {
+    var c = { pending: 0, all: 0, overdue: 0, done: 0, forMe: 0, mine: 0 };
+    inRange().forEach(function (t) { c.all++; if (!t.closed && t.stage !== 'overdue') c.pending++; if (!t.closed && t.stage === 'overdue') c.overdue++; if (t.closed) c.done++; if (t.forMe) c.forMe++; if (t.mine) c.mine++; });
+    return c;
+  }
+  function showOpts(C) {
+    return [['pending', 'Pending', C.pending], ['overdue', 'Overdue', C.overdue], ['done', 'Done', C.done], ['all', 'All issues', C.all], ['forme', 'Assigned to me', C.forMe], ['mine', 'Raised by me', C.mine]]
+      .map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === st.show ? ' selected' : '') + '>' + o[1] + ' (' + o[2] + ')</option>'; }).join('');
+  }
+  function list() {
+    return inRange().filter(function (t) {
+      if (st.show === 'pending' && (t.closed || t.stage === 'overdue')) return false;
+      if (st.show === 'overdue' && (t.closed || t.stage !== 'overdue')) return false;
+      if (st.show === 'done' && !t.closed) return false;
+      if (st.show === 'forme' && !t.forMe) return false;
+      if (st.show === 'mine' && !t.mine) return false;
+      if (st.prio && t.priority !== st.prio) return false;
+      if (st.loc && t.outlet !== st.loc) return false;
+      if (st.q && (t.id + ' ' + t.subject + ' ' + t.details + ' ' + t.name + ' ' + t.assigned + ' ' + t.taskId + ' ' + t.type + ' ' + t.dept).toLowerCase().indexOf(st.q) < 0) return false;
+      return true;
+    });
+  }
+  function rows() {
+    var all = list(), shown = all.slice(0, 200), box = $('#tkList', B);
+    ticked = [];
+    recList(box, shown, {
+      check: function (t) { return !!t.canClose; },
+      onCheck: function (Lk) { ticked = Lk; bulkBar(); },
+      title: function (t) { return '<span class="tk-dot d-' + (TK_DOT[t.stage] || 'up') + '"></span>' + h(t.subject || t.task || t.details || '—'); },
+      sub: function (t) { return h([t.id, L.inc ? '' : t.outlet, t.name, t.assigned ? '→ ' + t.assigned : '', t.priority].filter(Boolean).join(' · ')); },
+      right: function (t) { var s = TK_STAGE[t.stage] || ['Pending', 'grey']; return chip(s[0], s[1]); },
+      body: function (b, t) {
+        b.innerHTML = kvHtml([['Issue ID', t.id], ['Raised by', [t.name, t.dept, t.atText].filter(Boolean).join(' · ')], ['From', t.from === 'Checklist' ? 'Checklist task ' + t.taskId + (t.planned ? ' · planned ' + t.planned : '') : (t.from || 'Issues')],
+            ['Where', t.outlet || t.location], ['Type', t.type], ['Details', t.details], ['Assigned to', t.assigned || 'Not assigned'], ['Priority', t.priority], ['Resolve by', t.planResText],
+            t.closed ? ['Done on', t.actualText] : null, t.note ? ['What was done', t.note] : null]) + tkSteps(t) +
+          '<div class="row gap6 mt" style="flex-wrap:wrap">' + (t.photo ? '<a class="btn sm ghost" href="' + h(t.photo) + '" target="_blank">' + icon('image') + 'Photo</a>' : '') +
+          '<button class="btn sm ghost" data-a="hist">' + icon('history') + 'Steps &amp; notes</button><span class="grow"></span>' +
+          (t.canAssign ? '<button class="btn sm soft" data-a="assign">' + icon('person_add') + (t.assigned ? 'Re-assign' : 'Assign') + '</button>' : '') +
+          (t.canClose ? '<button class="btn sm green" data-a="close">' + icon('task_alt') + 'Mark done</button>' : '') +
+          (t.manage && t.closed ? '<button class="btn sm ghost" data-a="reopen">' + icon('replay') + 'Reopen</button>' : '') + '</div>';
+        $$('[data-a]', b).forEach(function (x) {
+          x.onclick = function (e) { e.stopPropagation(); var a = x.dataset.a; if (a === 'hist') history(t); else if (a === 'assign') assign(t); else step(t, a); };
+        });
+      },
+      empty: ({ pending: 'No pending issue', overdue: 'Nothing overdue', done: 'No issue done', forme: 'Nothing is assigned to you', mine: 'You have not raised an issue', all: 'No issue' }[st.show] || 'No issue') + ' between ' + rangeText() + '.',
+      emptyIcon: 'task_alt'
+    });
+    if (all.length > shown.length) box.insertAdjacentHTML('beforeend', '<div class="small muted mt">Showing 200 of ' + all.length + ' — search to narrow down.</div>');
+    box.insertAdjacentHTML('beforeend', '<div id="tkBulk"></div>');
+    bulkBar();
+  }
+  function bulkBar() {
+    var b0 = $('#tkBulk', B); if (!b0) return;
+    b0.innerHTML = ticked.length ? '<div class="bulkbar"><span class="grow">' + ticked.length + ' issue' + (ticked.length > 1 ? 's' : '') + ' ticked</span><button class="btn sm green" data-bulkdone>' + icon('task_alt') + 'Mark done</button></div>' : '';
+    if (!ticked.length) return;
+    $('[data-bulkdone]', b0).onclick = function () {
+      var L0 = ticked.slice();
+      modal({ title: 'Mark ' + L0.length + ' issue' + (L0.length > 1 ? 's' : '') + ' done', body: '<div class="small muted mb">' + h(L0.map(function (t) { return t.id; }).slice(0, 12).join(', ')) + (L0.length > 12 ? ' …' : '') + '</div>' +
+        '<div class="field"><label>What was done? *</label><textarea class="inp" data-k="note" rows="3" placeholder="The same note is written on every ticked issue"></textarea></div>',
+        actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('task_alt') + 'Mark done', cls: 'green', click: function (cl, m, btn) {
+          var n = val('[data-k="note"]', m); if (!n) return toast('Write what was done.', 'bad');
+          busy(btn, true, 'Closing…');
+          api('tk.bulk', { keys: L0.map(function (t) { return t.key; }), note: n }).then(function (r) { cl(); toast(r.message, 'ok'); after(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+        } }] });
+    };
+  }
+  function raise() {
+    var b = hubPanel(B, 'Raise Issue', 'add_circle', function () { view = ''; delete S.params.view; paint(); if (!L) load(); });
+    b.innerHTML = '<div class="card" style="max-width:720px"><div data-rf>' + loadingHtml() + '</div><div class="row mt"><span class="grow"></span><button class="btn green" id="tkGo">' + icon('send') + 'Raise issue</button></div></div>';
+    tkMeta().then(function (M) {
+      var f = tkRaiseForm($('[data-rf]', b), M, p.prefill || {}, function () { p.prefill = null; view = ''; delete S.params.view; st.show = 'mine'; load(true); });
+      $('#tkGo', b).onclick = function () { f.send(this); };
+    }).catch(function (e) { $('[data-rf]', b).innerHTML = errHtml(e); });
+  }
+  function after() { dcDel('tk.list', {}); dcDel('dash.load', { parts: ['home'], outletId: S.outlet }); load(true); }
+  function history(t) {
+    modal({ title: t.id + ' · ' + (t.subject || t.task || ''), wide: true, body: loadingHtml(), onOpen: function (m) {
+      api('tk.get', { key: t.key }).then(function (r) {
+        $('.modal-b', m).innerHTML = tkSteps(r.ticket) + '<div class="section-title">Steps &amp; notes</div>' + (r.log.length ? '<div class="rows">' + r.log.map(function (x) {
+          return '<div class="r"><div class="grow"><b>' + h(x.step) + '</b> <span class="tiny muted">' + h(x.at + ' · ' + x.by) + '</span><div class="small">' + h(x.details) + '</div></div></div>'; }).join('') + '</div>'
+          : '<div class="small muted">No step recorded here yet' + (t.src !== 'hub' ? ' (it was raised from the checklist app).' : '.') + '</div>') +
+          '<div class="field mt"><label>Add a note</label><div class="row gap6"><input class="inp sm grow" data-note placeholder="Anything the others should know"><button class="btn sm" data-addnote>' + icon('send') + 'Add</button></div></div>';
+        $('[data-addnote]', m).onclick = function () {
+          var n = val('[data-note]', m), b = this; if (!n) return toast('Write the note.', 'bad');
+          busy(b, true); api('tk.update', { key: t.key, action: 'note', note: n }).then(function (x) { busy(b, false); toast(x.message, 'ok'); m.remove(); history(t); }).catch(function (e) { busy(b, false); toast(e.message, 'bad'); });
+        };
+      }).catch(function (e) { $('.modal-b', m).innerHTML = errHtml(e); });
+    }, actions: [{ label: 'Close', cls: 'ghost' }] });
+  }
+  function assign(t) {
+    tkMeta().then(function (m0) {
+      var P = m0.people || [], hit = P.filter(function (x) { return norm(x.name) === norm(t.assigned); })[0];
+      var cur = hit ? hit.id + '|' + hit.name : '';
+      var days = t.priority === 'High' ? 0 : t.priority === 'Low' ? 4 : 2;
+      modal({ title: (t.assigned ? 'Re-assign ' : 'Assign ') + t.id, body: '<div class="small muted mb">' + h(t.subject || t.task) + ' · ' + h(t.outlet || '') + '</div>' +
+        '<div class="field"><label>Assign to *</label><select class="inp" data-k="who">' + tkPeopleOpts(P, cur) + '</select></div>' +
+        '<div class="form-grid"><div class="field"><label>Priority</label><select class="inp" data-k="prio">' + ['High', 'Mid', 'Low'].map(function (x) { return '<option' + (x === (t.priority || 'Mid') ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label>Resolve by</label><input type="date" class="inp" data-k="plan" value="' + h(t.planResKey || addDaysISO(todayISO(), days)) + '"></div></div>' +
+        '<div class="field"><label>Note (optional)</label><input class="inp" data-k="note"></div>',
+        actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('person_add') + 'Assign', cls: 'green', click: function (close, m, btn) {
+          var g = function (k) { return val('[data-k="' + k + '"]', m); };
+          if (!g('who')) return toast('Pick the person.', 'bad');
+          busy(btn, true);
+          var w = g('who').split('|');
+          api('tk.update', { key: t.key, action: 'assign', assignId: w[0], assigned: w.slice(1).join('|'), priority: g('prio'), planResolve: g('plan'), note: g('note') })
+            .then(function (r) { close(); toast(r.message, 'ok'); after(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+        } }] });
+    }).catch(function (e) { toast(e.message, 'bad'); });
+  }
+  function step(t, action) {
+    var done = action === 'close';
+    modal({ title: (done ? 'Mark done · ' : 'Reopen · ') + t.id, body: '<div class="small muted mb">' + h(t.subject || t.task) + '</div>' +
+      '<div class="field"><label>' + (done ? 'What was done? *' : 'Why reopen it?') + '</label><textarea class="inp" data-k="note" rows="3"></textarea></div>',
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon(done ? 'task_alt' : 'replay') + (done ? 'Mark done' : 'Reopen'), cls: done ? 'green' : 'amber', click: function (cl, m, btn) {
+        var n = val('[data-k="note"]', m); if (done && !n) return toast('Write what was done.', 'bad');
+        busy(btn, true);
+        api('tk.update', { key: t.key, action: action, note: n }).then(function (r) { cl(); toast(r.message, 'ok'); after(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+  if (view === 'raise') paint();
+  load();
+};
+</script>
+<style>
+.tk-steps{display:flex;align-items:flex-start;gap:6px;margin-top:10px;padding:8px 10px;background:#FBF6EE;border-radius:10px;overflow-x:auto}
+.tk-step{display:flex;gap:6px;align-items:flex-start;font-size:12.5px;color:#9A8B7E;min-width:0}
+.tk-step .dot{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#EFE5D8;flex:0 0 auto}
+.tk-step .dot .ms{font-size:15px}
+.tk-step.done{color:var(--green)}.tk-step.done .dot{background:var(--green);color:#fff}
+.tk-step.now{color:#8a4500}.tk-step.now .dot{background:var(--amber2);color:#6B4A00}
+.tk-step b{color:inherit}
+.tk-line{flex:1 1 18px;height:2px;background:#E6DACB;margin-top:10px;min-width:14px}
+.tk-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle;background:#93A3B8}
+.tk-dot.d-bad{background:var(--red)}.tk-dot.d-warn{background:#F59E0B}.tk-dot.d-ok{background:var(--green)}
+@media (max-width:560px){.tk-steps{gap:4px}.tk-step{font-size:12px}}
+</style>

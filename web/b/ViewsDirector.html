@@ -1,0 +1,737 @@
+<script>
+var DIR_LOCS = ['HQ', 'GFP', 'Chanderi', 'Pandri'];
+function dirLocList(have) {
+  var out = DIR_LOCS.filter(function (l) { return have.indexOf(l) >= 0; });
+  have.forEach(function (l) { if (out.indexOf(l) < 0) out.push(l); });
+  return out;
+}
+function dirSel(id, label, list, on, cls) {
+  return '<div class="ff' + (cls ? ' ' + cls : '') + '"><label>' + h(label) + '</label><select class="inp sm" id="' + id + '">' + list.map(function (x) {
+    return '<option value="' + h(x[0]) + '"' + (String(x[0]) === String(on) ? ' selected' : '') + '>' + h(x[1]) + '</option>';
+  }).join('') + '</select></div>';
+}
+function dirOnSel(root, id, fn) { var e = $('#' + id, root); if (e) e.onchange = function () { fn(this.value); }; }
+function dirN(label, n) { return label + ' (' + n + ')'; }
+function dirWeekRange() {
+  var n = new Date(), mon = new Date(n.getFullYear(), n.getMonth(), n.getDate() - ((n.getDay() + 6) % 7));
+  return { mon: isoOf(mon), today: todayISO() };
+}
+function uniqList(a) { var s0 = {}, o = []; a.forEach(function (x) { if (!s0[x]) { s0[x] = 1; o.push(x); } }); return o; }
+function dirPeriodNote(d) {
+  return 'Daily tasks of today, weekly tasks of this week (' + fmtISO(d.weekFrom).slice(0, 5) + ' – ' + fmtISO(addDaysISO(d.weekFrom, 6)).slice(0, 5) + ') and monthly tasks of this month.';
+}
+
+function dirDashboard(el) {
+  var b = S.boot, H = null, nav = S.nav, view = (S.params && S.params.card) || '';
+  el.innerHTML = '<div class="page-head"><div class="grow"><p class="greet">' + greeting() + ', ' + h(b.user.first) + '</p><div class="sub">' + dateLong() + '</div></div>' +
+    '<button class="btn sm ghost" id="drR">' + icon('sync') + 'Refresh</button></div><div id="drB"></div>';
+  var B = $('#drB', el);
+  function alive() { return S.nav === nav && document.body.contains(B); }
+  function load(force) {
+    if (force) return api('dir.home', { force: true }).then(function (d) { H = d; dcSet(dcKey('dir.home', {}), d); if (alive() && !view) paint(); });
+    return live('dir.home', {}, function (d) { H = d; if (alive() && !view) paint(); }, { alive: alive }).catch(function (e) { if (!H && !view) B.innerHTML = errHtml(e); });
+  }
+  $('#drR', el).onclick = function () {
+    var bt = this; busy(bt, true);
+    S.cache.dirChkData = {}; dcDel('dir.chk', {}); dcDel('dlg.list', {});
+    load(true).then(function () { busy(bt, false); if (view) paint(); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+  };
+  function v(f) { if (!H) return null; try { var x = f(H); return x === undefined ? '—' : x; } catch (e) { return '—'; } }
+  function card(k, c, ic, label, val, sub) {
+    return '<button class="dcard" data-card="' + k + '"><span class="dc-ic ' + c + '">' + icon(ic, 'fill') + '</span><span class="dc-body"><span class="dc-l">' + h(label) + '</span>' +
+      '<span class="dc-v">' + (val === null ? '<span class="shimmer"></span>' : val) + '</span><span class="dc-s">' + (sub === null ? '' : sub) + '</span></span>' + icon('chevron_right') + '</button>';
+  }
+  function paint() {
+    if (view === 'chk') return dirChkView(B, back);
+    if (view === 'tasks') return dirTasksView(B, back);
+    B.innerHTML = (H && H.errors.length ? '<div class="warn mb">' + h(H.errors.join(' · ')) + '</div>' : '') + '<div class="dash-cards dir-cards">' +
+      card('chk', 'c1', 'task_alt', 'Pending Checklists', v(function (x) { return x.chk.pending + x.chk.overdue; }),
+        v(function (x) { return x.chk.overdue + ' overdue · ' + x.chk.done + ' done · ' + x.chk.lists + ' checklists'; })) +
+      card('approvals', 'c2', 'approval', 'Approvals', v(function (x) { return x.appr.all; }), v(function (x) { return x.appr.cards.filter(function (c) { return c.all; }).map(function (c) { return h(c.label) + ' ' + c.all; }).join(' · ') || 'Nothing pending'; })) +
+      card('issues', 'c5', 'report_problem', 'Issues Raised', v(function (x) { return x.issues.pending + x.issues.overdue; }),
+        v(function (x) { return x.issues.pending + ' pending · ' + x.issues.overdue + ' overdue' + (x.issues.forMe ? ' · ' + x.issues.forMe + ' for you' : ''); })) +
+      card('tasks', 'c4', 'forward_to_inbox', 'Delegated Tasks', v(function (x) { return x.tasks.pending; }),
+        v(function (x) { return 'pending · ' + (x.tasks.waiting || 0) + ' pending with EA · ' + x.tasks.overdue + ' overdue'; })) + '</div>';
+    $$('[data-card]', B).forEach(function (c) { c.onclick = function () { open(c.dataset.card); }; });
+  }
+  function open(k) {
+    if (k === 'approvals') return go('approvals', {});
+    if (k === 'issues') return go('tickets', {});
+    view = k; S.params.card = k; paint();
+  }
+  function back() { view = ''; delete S.params.card; paint(); }
+  paint();
+  load(false);
+}
+
+function dirChkView(B, back) {
+  var st = S.cache.dirChk = S.cache.dirChk || { tab: 'team', loc: '', id: '', seg: 'pending', doer: '', q: '' };
+  var p = hubPanel(B, 'Pending Checklists', 'checklist', back);
+  p.innerHTML = tabsHtml([['team', 'Team View'], ['scores', 'Scores']], st.tab) + '<div id="dcB"></div>';
+  bindTabs(p, function (t) { st.tab = t; st.id = ''; body(); });
+  var box = $('#dcB', p);
+  function body() { if (st.tab === 'scores') return dirChkScores(box, st); if (st.id) return dirChkDetail(box, st, body); dirChkCards(box, st, body); }
+  body();
+}
+
+function dirLocSel(locs, st) {
+  if (st.loc && locs.indexOf(st.loc) < 0) st.loc = '';
+  return dirSel('dcLoc', 'Location', [['', 'All locations']].concat(dirLocList(locs).map(function (l) { return [l, l]; })), st.loc);
+}
+
+function dirChkCards(box, st, body) {
+  box.innerHTML = loadingHtml('Reading every checklist…');
+  live('dir.chk', {}, function (d) {
+    if (st.tab !== 'team' || st.id) return;
+    box.innerHTML = '<div class="fbar">' + dirLocSel(d.locs, st) + '<div class="ff grow small muted" style="justify-content:flex-end">' + h(dirPeriodNote(d)) + '</div></div><div id="dcL"></div>';
+    dirOnSel(box, 'dcLoc', function (v0) { st.loc = v0; draw(); });
+    function draw() {
+      var L = d.list.filter(function (x) { return !st.loc || x.loc === st.loc; }).sort(function (a, c) { return (c.pending + c.overdue) - (a.pending + a.overdue) || a.name.localeCompare(c.name); });
+      $('#dcL', box).innerHTML = L.length ? '<div class="grid g3 dchk">' + L.map(function (c) {
+        return '<div class="card dchk-c" data-id="' + h(c.id) + '"><div class="row"><div class="grow"><h3 style="margin:0">' + h(c.name) + '</h3>' +
+          '<div class="small muted">' + h(c.loc + (c.dept ? ' · ' + c.dept : '')) + '</div></div>' + icon('chevron_right') + '</div>' +
+          (c.error ? '<div class="small mt" style="color:var(--red)">' + h(c.error) + '</div>' :
+            '<div class="row mt small" style="flex-wrap:wrap;gap:6px">' + chip('Pending ' + c.pending, c.pending ? 'orange' : 'grey') + (c.overdue ? chip('Overdue ' + c.overdue, 'red') : '') + chip('Done ' + c.done, 'green') + '</div>') + '</div>';
+      }).join('') + '</div>' : '<div class="card">' + emptyHtml('checklist', 'No checklist here.') + '</div>';
+      $$('[data-id]', box).forEach(function (c) { c.onclick = function () { st.id = c.dataset.id; st.seg = 'pending'; st.doer = ''; st.q = ''; body(); }; });
+    }
+    draw();
+  }, { alive: function () { return document.body.contains(box) && st.tab === 'team' && !st.id; } }).catch(function (e) { box.innerHTML = errHtml(e); });
+}
+
+function dirChkDetail(box, st, body) {
+  var cache = S.cache.dirChkData = S.cache.dirChkData || {}, id = st.id;
+  box.innerHTML = loadingHtml('Reading the tasks…');
+  function get(force) {
+    if (cache[id] && !force) return Promise.resolve(cache[id]);
+    return Promise.all([api('chk.tasks', { id: id, scope: true }), api('dir.chkUsers', { id: id }).catch(function () { return { people: [], dept: '' }; })])
+      .then(function (r) { cache[id] = { day: r[0], users: r[1] }; return cache[id]; });
+  }
+  get(false).then(draw).catch(function (e) { box.innerHTML = '<button class="btn sm ghost mb" id="dcBk">' + icon('arrow_back') + 'All checklists</button>' + errHtml(e); $('#dcBk', box).onclick = function () { st.id = ''; body(); }; });
+  function draw(D) {
+    if (st.id !== id || !document.body.contains(box)) return;
+    var T = D.day.tasks, today = D.day.today;
+    var sets = { pending: T.filter(function (t) { return t.state === 'pending'; }), overdue: T.filter(function (t) { return t.state === 'overdue'; }), done: T.filter(function (t) { return t.state === 'done'; }), all: T };
+    var doers = uniqList(T.map(function (t) { return t.name; }).filter(Boolean)).sort();
+    box.innerHTML = '<div class="crumb"><button class="btn sm ghost" id="dcBk">' + icon('arrow_back') + 'All checklists</button><b class="grow">' + h(D.day.name) + '</b>' +
+      '<span class="small muted">' + h(D.day.loc + (D.day.dept ? ' · ' + D.day.dept : '')) + '</span></div>' +
+      '<div class="fbar">' + dirSel('dcS', 'Filter By', [['pending', dirN('Pending', sets.pending.length)], ['overdue', dirN('Overdue', sets.overdue.length)], ['done', dirN('Done', sets.done.length)], ['all', dirN('All', T.length)]], st.seg) +
+      (doers.length > 1 ? dirSel('dcD', 'Doer', [['', 'Every doer']].concat(doers.map(function (n) { return [n, n]; })), st.doer) : '') +
+      '<div class="ff grow"><label>Search</label><input class="inp sm" id="dcQ" placeholder="Task, ID…" value="' + h(st.q) + '"></div></div>' +
+      '<div class="small muted mb">' + h(dirPeriodNote(D.day)) + ' Tick tasks to give them to someone of the ' + h(D.users.dept || 'same') + ' department.</div>' +
+      '<div id="dcR"></div><div id="dcBulk"></div>';
+    $('#dcBk', box).onclick = function () { st.id = ''; body(); };
+    dirOnSel(box, 'dcS', function (v0) { st.seg = v0; rows(); });
+    dirOnSel(box, 'dcD', function (v0) { st.doer = v0; rows(); });
+    $('#dcQ', box).oninput = debounce(function () { st.q = val('#dcQ', box).toLowerCase(); rows(); }, 200);
+    function rows() {
+      var R = sets[st.seg].filter(function (t) { return (!st.doer || t.name === st.doer) && (!st.q || (t.task + ' ' + t.id + ' ' + t.name).toLowerCase().indexOf(st.q) >= 0); })
+        .slice().sort(function (a, c) { return (a.done - c.done) || (a.planned - c.planned); });
+      var bx = $('#dcR', box);
+      if (!R.length) { bx.innerHTML = '<div class="card">' + emptyHtml('task_alt', { pending: 'Nothing pending.', overdue: 'Nothing overdue.', done: 'Nothing done yet.', all: 'No task in this period.' }[st.seg]) + '</div>'; bx.R = []; bulk(); return; }
+      bx.innerHTML = '<div class="recs">' + R.map(function (t, i) {
+        var dday = isoOf(new Date(t.planned)), late = t.state === 'overdue';
+        var tag = t.done ? (t.late ? chip('Done late', 'orange') : chip('Done', 'green')) : t.assignedTo ? chip('Given to ' + t.assignedTo.split(' ')[0], 'violet') : late ? chip('Overdue', 'red') : chip('Pending', 'grey');
+        return '<div class="ck-r' + (t.done ? ' done' : '') + '" data-i="' + i + '">' + (t.done ? '' : '<input type="checkbox" class="selbox" data-ck="' + i + '">') +
+          '<span class="ck-dot ' + (t.done ? 'd-ok' : late ? 'd-bad' : 'd-up') + '"></span><div class="ck-t"><b>' + h(t.task) + '</b>' +
+          '<span>' + h([freqName(t.freq), dday === today ? t.time : fmtISO(dday).slice(0, 5) + ' ' + t.time, t.name, t.id].join(' · ')) + '</span></div>' + tag + '</div>';
+      }).join('') + '</div>';
+      $$('.ck-r', bx).forEach(function (r) {
+        var t = R[+r.dataset.i];
+        r.onclick = function (e) {
+          if (e.target.classList.contains('selbox')) return bulk();
+          if (t.done) return modal({ title: 'Task details', body: kvHtml([['Task', t.task], ['Doer', t.name], ['Frequency', freqName(t.freq)], ['Planned', t.plannedText], ['Done', t.actualText], ['Remark', t.remark || '—'],
+            t.att ? ['Photo', '<a href="' + h(t.att) + '" target="_blank">Open</a>', true] : null]) });
+          var c = $('.selbox', r); if (c) { c.checked = !c.checked; bulk(); }
+        };
+      });
+      bx.R = R;
+      bulk();
+    }
+    function bulk() {
+      var bx = $('#dcR', box), bar = $('#dcBulk', box), R = bx.R || [];
+      var sel = $$('[data-ck]', bx).filter(function (c) { return c.checked; }).map(function (c) { return R[+c.dataset.ck]; });
+      if (!sel.length) { bar.innerHTML = ''; return; }
+      var P = D.users.people || [];
+      bar.innerHTML = '<div class="bulk"><b>' + sel.length + ' selected</b>' +
+        (P.length ? '<select class="inp sm" id="dcTo" style="width:auto;min-width:170px"><option value="">Give to…</option>' + P.map(function (u) {
+          return '<option value="' + h(u.uid) + '">' + h(u.name + (u.designation ? ' · ' + u.designation : '') + (u.outlet ? ' · ' + u.outlet : '')) + '</option>'; }).join('') + '</select>' +
+          '<input class="inp sm" id="dcN" placeholder="Note (optional)" style="width:auto;flex:1 1 160px;min-width:120px"><button class="btn sm amber" id="dcGo">' + icon('person_add') + 'Give</button>'
+          : '<span class="small">Nobody else is in the ' + h(D.users.dept || 'same') + ' department.</span>') + '</div>';
+      if (!$('#dcGo', bar)) return;
+      $('#dcGo', bar).onclick = function () {
+        var to = val('#dcTo', bar);
+        if (!to) return toast('Pick the person.', 'bad');
+        var bt = this; busy(bt, true, 'Giving…');
+        api('chk.assign', { id: id, to: to, date: today, note: val('#dcN', bar), items: sel.map(function (t) { return { row: t.row, taskId: t.id }; }) })
+          .then(function (r) { toast(r.message, 'ok'); dcDel('dir.chk', {}); return get(true).then(draw); })
+          .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+      };
+    }
+    rows();
+  }
+}
+
+function dirChkScores(box, st) {
+  box.innerHTML = loadingHtml('Working out the scores…');
+  var sel = { id: '', week: '', doer: '' };
+  live('chk.scores', { weeks: 8 }, function (D) {
+    if (st.tab !== 'scores') return;
+    var locs = uniqList(D.lists.map(function (l) { return l.loc || 'Other'; }));
+    function sum(rows) {
+      var p0 = 0, dn = 0, ot = 0; rows.forEach(function (x) { p0 += x.plan; dn += x.done; ot += x.onTime; });
+      return p0 ? { plan: p0, done: dn, onTime: ot, nd: dn / p0 * 100 - 100, ot: ot / p0 * 100 - 100 } : null;
+    }
+    function wk(w) { return w ? fmtISO(w.from).slice(0, 5) + ' – ' + fmtISO(w.to).slice(0, 5) : ''; }
+    function metric(x) {
+      return '<div class="ck-sm"><div class="ck-m ' + chkScoreTone(x.nd) + '"><b>' + chkPct(x.nd) + '</b><span>% work not done</span></div>' +
+        '<div class="ck-m ' + chkScoreTone(x.ot) + '"><b>' + chkPct(x.ot) + '</b><span>% work not done on time</span></div></div>';
+    }
+    function cards() {
+      var last = D.weeks[0];
+      box.innerHTML = (D.errors.length ? '<div class="warn mb">' + h(D.errors.join(' · ')) + '</div>' : '') + '<div class="fbar">' + dirLocSel(locs, st) +
+        '<div class="ff grow small muted" style="justify-content:flex-end">Last week ' + h(wk(last)) + '</div></div><div id="scC"></div>';
+      dirOnSel(box, 'dcLoc', function (v0) { st.loc = v0; cards(); });
+      var L = D.lists.filter(function (l) { return !st.loc || (l.loc || 'Other') === st.loc; });
+      if (!L.length) { $('#scC', box).innerHTML = '<div class="card">' + emptyHtml('insights', 'No checklist here.') + '</div>'; return; }
+      hubCards($('#scC', box), L.map(function (l) {
+        var x = sum(l.rows.filter(function (r) { return r.week === last.i; }));
+        return { key: l.id, icon: 'checklist', label: l.name, value: x ? chkPct(x.nd) : '—', sub: x ? h((l.loc || '') + ' · on time ' + chkPct(x.ot) + ' · ' + l.doers.length + ' doers') : h(l.loc || '') + ' · nothing planned last week' };
+      }), function (k) { sel.id = k; sel.week = String(last.i); sel.doer = ''; detail(); });
+    }
+    function detail() {
+      var l = D.lists.filter(function (x) { return x.id === sel.id; })[0];
+      box.innerHTML = '<div class="crumb"><button class="btn sm ghost" id="scBk">' + icon('arrow_back') + 'All checklists</button><b class="grow">' + h(l.name) + ' · Scores</b><span class="small muted">' + h(l.loc || '') + '</span></div>' +
+        '<div class="fbar">' + dirSel('scW', 'Week', [['', 'Last 8 weeks']].concat(D.weeks.map(function (w) { return [String(w.i), wk(w)]; })), sel.week) +
+        dirSel('scD', 'Doer', [['', 'Every doer']].concat(l.doers.map(function (n) { return [n, n]; })), sel.doer, 'grow') + '</div>' +
+        '<div id="scT"></div><div class="section-title">Doer-wise</div><div id="scL"></div>';
+      $('#scBk', box).onclick = cards;
+      dirOnSel(box, 'scW', function (v0) { sel.week = v0; rows(); });
+      dirOnSel(box, 'scD', function (v0) { sel.doer = v0; rows(); });
+      function rows() {
+        var R = l.rows.filter(function (x) { return (sel.week === '' || String(x.week) === sel.week) && (!sel.doer || x.doer === sel.doer); });
+        var tot = sum(R), by = {};
+        R.forEach(function (x) { var k = sel.doer ? x.week : x.doer; (by[k] = by[k] || []).push(x); });
+        $('#scT', box).innerHTML = tot ? '<div class="ck-score"><div class="ck-sh">' + icon('insights') + '<b>' + h(sel.doer || 'Everyone') + '</b><span>' + (sel.week === '' ? 'last 8 weeks' : wk(D.weeks.filter(function (w) { return String(w.i) === sel.week; })[0])) + '</span></div>' +
+          metric(tot) + '<div class="ck-sx">' + tot.done + ' of ' + tot.plan + ' done · ' + tot.onTime + ' on time</div></div>' : '';
+        var list = Object.keys(by).map(function (k) { var x = sum(by[k]); x.key = k; return x; }).sort(function (a, c) { return sel.doer ? Number(c.key) - Number(a.key) : (a.nd - c.nd) || String(a.key).localeCompare(String(c.key)); });
+        recList($('#scL', box), list, {
+          title: function (x) { return h(sel.doer ? wk(D.weeks.filter(function (w) { return String(w.i) === String(x.key); })[0]) : x.key); },
+          sub: function (x) { return x.done + ' of ' + x.plan + ' done · ' + x.onTime + ' on time'; },
+          right: function (x) { return '<span class="chip ' + (x.nd >= -5 ? 'green' : x.nd >= -20 ? 'orange' : 'red') + '">' + chkPct(x.nd) + '</span> <span class="chip ' + (x.ot >= -5 ? 'green' : x.ot >= -20 ? 'orange' : 'red') + '">' + chkPct(x.ot) + '</span>'; },
+          empty: 'No task was planned for this choice.', emptyIcon: 'insights'
+        });
+      }
+      rows();
+    }
+    if (sel.id) detail(); else cards();
+  }, { alive: function () { return document.body.contains(box) && st.tab === 'scores'; } }).catch(function (e) { box.innerHTML = errHtml(e); });
+}
+
+function dirTasksView(B, back) {
+  var st = S.cache.dirTk = S.cache.dirTk || { sub: '', show: 'pending', doer: '', q: '' };
+  var p = hubPanel(B, st.sub === 'add' ? 'Delegate Task' : st.sub === 'list' ? 'Delegated tasks' : 'Delegated Tasks', st.sub === 'add' ? 'add_task' : 'forward_to_inbox',
+    function () { if (st.sub) { st.sub = ''; return dirTasksView(B, back); } back(); });
+  p.innerHTML = loadingHtml('Loading delegated tasks…');
+  live('dlg.list', {}, function (D) {
+    if (!document.body.contains(p)) return;
+    if (!st.sub) {
+      p.innerHTML = '<div id="dtC"></div>';
+      hubCards($('#dtC', p), [
+        { key: 'list', icon: 'pending_actions', label: 'Pending delegated tasks', value: D.counts.pending, sub: D.counts.overdue + ' overdue · ' + D.counts.dueToday + ' due today · ' + (D.counts.waiting || 0) + ' pending with EA · ' + D.counts.done + ' done' },
+        { key: 'add', icon: 'add_task', label: 'Delegate Task', value: icon('chevron_right'), sub: 'Give a task to one or more doers' }
+      ], function (k) { st.sub = k; dirTasksView(B, back); });
+      return;
+    }
+    if (st.sub === 'add') return dlgForm(p, D, function () { st.sub = 'list'; st.show = 'pending'; dcDel('dlg.list', {}); dcDel('dir.home', {}); dirTasksView(B, back); });
+    var doers = uniqList(D.tasks.map(function (t) { return t.doer; })).sort();
+    function counts() {
+      var L = D.tasks.filter(function (t) { return !st.doer || t.doer === st.doer; });
+      return { all: L.length, pending: L.filter(function (t) { return t.status === 'Pending'; }).length, waiting: L.filter(function (t) { return t.status === 'Pending with EA'; }).length, done: L.filter(function (t) { return t.status === 'Done'; }).length };
+    }
+    function bar() {
+      var c = counts();
+      return dirSel('dtS', 'Filter By', [['pending', dirN('Pending', c.pending)], ['waiting', dirN('Pending with EA', c.waiting)], ['done', dirN('Done', c.done)], ['all', dirN('All', c.all)]], st.show) +
+        dirSel('dtD', 'Doer', [['', 'Every doer']].concat(doers.map(function (n) { return [n, n]; })), st.doer) +
+        '<div class="ff grow"><label>Search</label><input class="inp sm" id="dtQ" placeholder="Task, ID…" value="' + h(st.q) + '"></div>';
+    }
+    p.innerHTML = '<div class="fbar" id="dtF">' + bar() + '</div><div id="dtL"></div>';
+    function bind() {
+      dirOnSel(p, 'dtS', function (v0) { st.show = v0; rows(); });
+      dirOnSel(p, 'dtD', function (v0) { st.doer = v0; var q = st.q; $('#dtF', p).innerHTML = bar(); bind(); $('#dtQ', p).value = q; rows(); });
+      $('#dtQ', p).oninput = debounce(function () { st.q = val('#dtQ', p).toLowerCase(); rows(); }, 200);
+    }
+    bind();
+    function rows() {
+      var R = D.tasks.filter(function (t) {
+        if (st.show === 'pending' && t.status !== 'Pending') return false;
+        if (st.show === 'done' && t.status !== 'Done') return false;
+        if (st.show === 'waiting' && t.status !== 'Pending with EA') return false;
+        if (st.doer && t.doer !== st.doer) return false;
+        return !st.q || (t.task + ' ' + t.id + ' ' + t.doer).toLowerCase().indexOf(st.q) >= 0;
+      });
+      var shown = R.slice(0, 300);
+      recList($('#dtL', p), shown, {
+        title: function (t) { return h(t.task); },
+        sub: function (t) { return h([t.doer, t.dept, (t.status === 'Done' ? 'planned ' : 'due ') + t.dueText, t.revs ? t.revs + ' revision' + (t.revs > 1 ? 's' : '') : ''].filter(Boolean).join(' · ')); },
+        right: function (t) { return t.status === 'Done' ? chip('Done', 'green') : t.status === 'Pending with EA' ? chip('Pending with EA', 'violet') : t.overdue ? chip('Overdue', 'red') : t.due === D.today ? chip('Due today', 'orange') : chip('Pending', 'blue'); },
+        body: function (el0, t) { el0.innerHTML = kvHtml([['Task ID', t.id], ['Doer', t.doer + (t.dept ? ' · ' + t.dept : '')], ['Given by', t.by], ['Given on', t.firstText], ['Due', t.dueText], ['Revisions', t.revs], ['Status', t.status],
+          t.remark ? ['Doer\'s remark', t.remark] : null, t.link ? ['Link', '<a href="' + h(t.link) + '" target="_blank" rel="noopener">' + h(t.link) + '</a>', true] : null, t.approvedBy ? ['Approved by', t.approvedBy + (t.approved ? ' · ' + t.approved : '')] : null]); },
+        empty: st.show === 'done' ? 'No task done in the last ' + Math.round((new Date() - new Date(D.keepFrom)) / 86400000) + ' days.' : st.show === 'waiting' ? 'Nothing is waiting for the EA.' : 'No pending task.', emptyIcon: 'task_alt'
+      });
+      if (R.length > shown.length) $('#dtL', p).insertAdjacentHTML('beforeend', '<div class="small muted mt">Showing 300 of ' + R.length + ' — search to narrow down.</div>');
+    }
+    rows();
+  }, { alive: function () { return document.body.contains(p); } }).catch(function (e) { p.innerHTML = errHtml(e); });
+}
+
+function dlgForm(p, D, done) {
+  var byDept = {};
+  D.doers.forEach(function (x) { (byDept[x.dept || 'Other'] = byDept[x.dept || 'Other'] || []).push(x); });
+  p.innerHTML = '<div class="card"><div class="form-grid"><div class="field full"><label>Task *</label><textarea class="inp" id="dgT" placeholder="What needs to be done"></textarea></div>' +
+    '<div class="field"><label>Due date *</label><input type="date" class="inp" id="dgD" value="' + todayISO() + '" min="' + todayISO() + '"></div></div>' +
+    '<label class="mt" style="display:block;font-weight:600;font-size:13px;color:var(--muted)">Doers *</label>' +
+    '<input class="inp sm mb mt" id="dgQ" placeholder="Search doers…"><div class="userpick" id="dgP">' +
+    Object.keys(byDept).sort().map(function (k) {
+      return '<div class="small muted b" style="padding:8px 10px 2px" data-dg="' + h(k) + '">' + h(k) + '</div>' + byDept[k].map(function (x) {
+        return '<label data-name="' + h((x.name + ' ' + x.number + ' ' + k).toLowerCase()) + '" data-dept="' + h(k) + '"><input type="checkbox" value="' + h(x.key) + '"><div class="grow"><div class="b">' + h(x.name) + '</div>' +
+          '<div class="small muted">' + h([x.number, x.email].filter(Boolean).join(' · ')) + '</div></div></label>';
+      }).join('');
+    }).join('') + '</div><div class="row mt"><span class="small muted grow" id="dgN">Nobody picked</span><button class="btn green" id="dgGo">' + icon('send') + 'Delegate</button></div></div>';
+  $('#dgQ', p).oninput = function () {
+    var q = this.value.toLowerCase().trim();
+    $$('#dgP label', p).forEach(function (l) { l.style.display = !q || l.dataset.name.indexOf(q) >= 0 ? '' : 'none'; });
+    $$('#dgP [data-dg]', p).forEach(function (g) { g.style.display = $$('#dgP label[data-dept="' + g.dataset.dg + '"]', p).some(function (l) { return l.style.display !== 'none'; }) ? '' : 'none'; });
+  };
+  function picked() { return $$('#dgP input:checked', p).map(function (c) { return c.value; }); }
+  $$('#dgP input', p).forEach(function (c) { c.onchange = function () { var n = picked().length; $('#dgN', p).textContent = n ? n + ' doer' + (n > 1 ? 's' : '') + ' picked' : 'Nobody picked'; }; });
+  $('#dgGo', p).onclick = function () {
+    var task = val('#dgT', p), date = val('#dgD', p), who = picked();
+    if (!task) return toast('Write the task.', 'bad');
+    if (!who.length) return toast('Pick at least one doer.', 'bad');
+    var bt = this; busy(bt, true, 'Delegating…');
+    api('dlg.add', { task: task, date: date, doers: who }).then(function (r) { toast(r.message, 'ok'); done(); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+  };
+}
+
+V.dir_hr = function (el) {
+  var nav = S.nav, kind = '';
+  el.innerHTML = pageHead('HR Dashboard', '') + '<div id="dhB"></div>';
+  var B = $('#dhB', el), T = null;
+  function cards() {
+    var v = function (k, f) { if (!T) return '…'; var L = T[k]; return L ? f(L) : '—'; };
+    B.innerHTML = '<div id="dhC"></div>';
+    hubCards($('#dhC', B), [
+      { key: 'payroll', icon: 'payments', label: 'Payroll', value: icon('chevron_right'), sub: 'Employees, attendance, penalty, overtime, salary preparation, slips, reports' },
+      { key: 'advance', icon: 'request_page', label: 'Advance', value: v('advance', function (L) { return L.length; }),
+        sub: v('advance', function (L) { return L.filter(function (x) { return !x.done; }).length + ' pending · ' + money(L.reduce(function (s0, x) { return s0 + (Number(x.amount) || 0); }, 0)) + ' · ' + T.month; }) },
+      { key: 'reimb', icon: 'request_quote', label: 'Reimbursement', value: v('reimb', function (L) { return L.length; }),
+        sub: v('reimb', function (L) { return L.filter(function (x) { return !x.done; }).length + ' pending · ' + money(L.reduce(function (s0, x) { return s0 + (Number(x.amount) || 0); }, 0)) + ' · ' + T.month; }) }
+    ], function (k) {
+      if (k === 'payroll') return go('payroll', {});
+      kind = k; detail();
+    });
+  }
+  function detail() {
+    loadBundle('ViewsApprove').then(function () {
+      if (S.nav !== nav) return;
+      trackPanel(B, { kind: kind, fixed: true, show: '', loc: '', q: '', T: T }, function () { kind = ''; cards(); });
+    }).catch(function (e) { B.innerHTML = errHtml(e); });
+  }
+  cards();
+  live('appr.track', {}, function (d) { T = d; if (S.nav === nav && !kind) cards(); }, { alive: function () { return S.nav === nav; } }).catch(function (e) { if (!kind) B.insertAdjacentHTML('afterbegin', errHtml(e)); });
+};
+
+V.dir_dsr = function (el, p) {
+  var st = { outletId: p.outletId || '', month: p.month || monthISO() };
+  el.innerHTML = pageHead('DSR Daily Sales', '') + '<div id="dsB">' + loadingHtml() + '</div>';
+  var B = $('#dsB', el);
+  function load() {
+    B.innerHTML = loadingHtml('Reading the DSR…');
+    live('dir.dsr', { outletId: st.outletId, month: st.month }, draw, { box: B }).catch(function (e) { B.innerHTML = errHtml(e); });
+  }
+  function draw(d) {
+    st.outletId = d.outletId;
+    var sales = d.cols.filter(function (c) { return c.section === 'sales' && c.type === 'currency' && c.key !== 'totalSales'; });
+    var T = d.totals, days = d.rows.length, avg = T.totalOrders ? (T.totalSales || 0) / T.totalOrders : 0;
+    B.innerHTML = '<div class="fbar"><div class="ff"><label>Location</label><select class="inp sm" id="dsO">' + d.outlets.map(function (o) {
+        return '<option value="' + h(o.id) + '"' + (o.id === d.outletId ? ' selected' : '') + '>' + h(o.name) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="ff"><label>Month</label><input type="month" class="inp sm" id="dsM" value="' + h(d.month) + '"></div></div>' +
+      '<div id="dsK"></div>' + (d.missing.length ? '<div class="warn mt">' + icon('event_busy') + ' Not filled: ' + h(d.missing.join(', ')) + '</div>' : '') +
+      (days ? '<div class="tbl-wrap mt"><table class="tbl"><tr><th>Date</th>' + sales.map(function (c) { return '<th class="num">' + h(c.header.replace(/ Sales$/, '')) + '</th>'; }).join('') +
+        '<th class="num">Total sales</th><th class="num">Orders</th><th class="num">Avg / order</th><th class="num">Expenses</th><th>By</th></tr>' +
+        d.rows.map(function (r) {
+          return '<tr><td class="nowrap">' + h(r.dateText) + '</td>' + sales.map(function (c) { return '<td class="num">' + (r[c.key] === '' ? '—' : money(r[c.key])) + '</td>'; }).join('') +
+            '<td class="num b">' + money(r.totalSales) + '</td><td class="num">' + num(r.totalOrders) + '</td><td class="num">' + (r.totalOrders ? money(Number(r.totalSales) / Number(r.totalOrders)) : '—') + '</td>' +
+            '<td class="num">' + money(r.expenses) + '</td><td class="small">' + h(r.submittedBy || '') + '</td></tr>';
+        }).join('') + '<tfoot><tr><td>Total</td>' + sales.map(function (c) { return '<td class="num">' + money(T[c.key]) + '</td>'; }).join('') +
+        '<td class="num">' + money(T.totalSales) + '</td><td class="num">' + num(T.totalOrders) + '</td><td class="num">' + (avg ? money(avg) : '—') + '</td><td class="num">' + money(T.expenses) + '</td><td></td></tr></tfoot></table></div>'
+        : '<div class="card mt">' + emptyHtml('point_of_sale', 'No DSR filled for ' + d.outlet + ' in ' + d.monthText + '.') + '</div>');
+    hubCards($('#dsK', B), [
+      { key: 's', icon: 'point_of_sale', label: 'Total sales', value: money(T.totalSales || 0), sub: d.outlet + ' · ' + d.monthText, static: true },
+      { key: 'o', icon: 'receipt', label: 'Orders', value: num(T.totalOrders || 0), sub: avg ? money(avg) + ' per order' : '—', static: true },
+      { key: 'e', icon: 'shopping_bag', label: 'Expenses', value: money(T.expenses || 0), sub: 'cash ' + money(T.cashExp || 0) + ' · UPI ' + money(T.upiExp || 0), static: true },
+      { key: 'd', icon: 'event_available', label: 'Days filled', value: days, sub: d.missing.length ? d.missing.length + ' day(s) missing' : 'every day filled', static: true }
+    ]);
+    $('#dsO', B).onchange = function () { st.outletId = this.value; load(); };
+    $('#dsM', B).onchange = function () { st.month = this.value || monthISO(); load(); };
+  }
+  load();
+};
+
+V.dir_exp = function (el, p) {
+  var st = { month: p.month || monthISO(), open: '' };
+  el.innerHTML = pageHead('Expense Records', '', '<input type="month" class="inp sm" id="deM" value="' + st.month + '" style="width:auto">') + '<div id="deB">' + loadingHtml() + '</div>';
+  var B = $('#deB', el), D = null;
+  $('#deM', el).onchange = function () { st.month = this.value || monthISO(); load(); };
+  function load() { B.innerHTML = loadingHtml('Reading the DSR…'); live('dir.exp', { month: st.month }, function (d) { D = d; draw(); }, { box: B }).catch(function (e) { B.innerHTML = errHtml(e); }); }
+  function draw() {
+    if (st.open) {
+      var o = D.outlets.filter(function (x) { return x.id === st.open; })[0];
+      var bx = hubPanel(B, o.name + ' · ' + D.monthText, 'receipt_long', function () { st.open = ''; draw(); });
+      bx.innerHTML = o.error ? errHtml(o.error) : o.days.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Date</th><th class="num">Cash</th><th class="num">UPI</th><th class="num">Total</th><th>By</th></tr>' +
+        o.days.map(function (x) { return '<tr><td class="nowrap">' + h(x.dateText) + '</td><td class="num">' + money(x.cash) + '</td><td class="num">' + money(x.upi) + '</td><td class="num b">' + money(x.total) + '</td><td class="small">' + h(x.by) + '</td></tr>'; }).join('') +
+        '<tfoot><tr><td>Total</td><td class="num">' + money(o.cash) + '</td><td class="num">' + money(o.upi) + '</td><td class="num">' + money(o.total) + '</td><td></td></tr></tfoot></table></div>'
+        : '<div class="card">' + emptyHtml('receipt_long', 'No expense in the DSR this month.') + '</div>';
+      return;
+    }
+    var R = D.recorded;
+    B.innerHTML = '<div id="deC"></div>' + (R && R.rows.length ? '<div class="section-title">Bills entered in One Login · ' + money(R.total) + '</div><div id="deR"></div>' : '');
+    hubCards($('#deC', B), D.outlets.map(function (o) {
+      return { key: o.id, icon: 'storefront', label: o.name, value: money(o.total), sub: o.error ? h(o.error) : 'cash ' + money(o.cash) + ' · UPI ' + money(o.upi) + ' · ' + o.days.length + ' days · ' + D.monthText };
+    }), function (k) { st.open = k; draw(); });
+    if (R && R.rows.length) recList($('#deR', B), R.rows, {
+      title: function (x) { return h(x.category + ' · ' + money(x.amount)); },
+      sub: function (x) { return h([x.date, x.outlet, x.desc, x.paidTo, x.mode].filter(Boolean).join(' · ')); },
+      right: function (x) { return x.fileId ? '<button class="btn sm ghost" data-b="' + h(x.id) + '">' + icon('image') + '</button>' : ''; }
+    });
+    $$('[data-b]', B).forEach(function (x) { x.onclick = function (e) { e.stopPropagation(); viewFile('exp', x.dataset.b, 'Expense bill'); }; });
+  }
+  load();
+};
+
+
+V.dir_grn = function (el, p) {
+  var st = { from: p.from || addDaysISO(todayISO(), -29), to: p.to || todayISO(), open: '', tab: 'grn', period: '29' };
+  el.innerHTML = pageHead('GRN Summary', '') + '<div id="dgB">' + loadingHtml() + '</div>';
+  var B = $('#dgB', el), D = null;
+  function load() { B.innerHTML = loadingHtml(); live('dir.grn', { from: st.from, to: st.to }, function (d) { D = d; draw(); }, { box: B }).catch(function (e) { B.innerHTML = errHtml(e); }); }
+  function draw() {
+    var bar = '<div class="fbar">' + dirSel('gQ', 'Period', [['0', 'Today'], ['6', 'Last 7 days'], ['29', 'Last 30 days'], ['c', 'From – To']], st.period) +
+      '<div class="ff"><label>From</label><input type="date" class="inp sm" id="gF" value="' + st.from + '" max="' + todayISO() + '"></div>' +
+      '<div class="ff"><label>To</label><input type="date" class="inp sm" id="gT" value="' + st.to + '" max="' + todayISO() + '"></div></div>';
+    if (st.open) {
+      var x = D.locs.filter(function (l) { return l.id === st.open; })[0];
+      var bx = hubPanel(B, x.name + ' · GRN', 'inventory_2', function () { st.open = ''; draw(); });
+      bx.innerHTML = tabsHtml([['grn', 'Order GRN (' + x.grn.length + ')'], ['bills', 'Bills (' + x.bills.length + ')'], ['veg', 'Vegetables (' + x.veg.length + ')']], st.tab) + '<div id="gL"></div>';
+      bindTabs(bx, function (t) { st.tab = t; list(); });
+      function list() {
+        var box = $('#gL', bx);
+        if (st.tab === 'grn') recList(box, x.grn, { title: function (g) { return h(g.no + ' · ' + g.orderNo); }, sub: function (g) { return h([g.date, g.lines + ' lines', 'received ' + num(g.received) + ' of ' + num(g.ordered), g.by].join(' · ')); },
+          right: function (g) { return g.short ? chip('Short ' + num(g.short), 'red') : chip('Full', 'green'); }, empty: 'No GRN in this period.', emptyIcon: 'inventory_2' });
+        else if (st.tab === 'bills') recList(box, x.bills, { title: function (g) { return h((g.party || 'Bill') + ' · ' + money(g.amount)); }, sub: function (g) { return h([g.date, g.billNo ? 'Bill ' + g.billNo : '', g.items + ' items', g.by].filter(Boolean).join(' · ')); },
+          body: function (e0, g) { e0.innerHTML = kvHtml(g.lines.map(function (l) { return [l.item, num(l.qty) + ' ' + l.unit + (l.amount ? ' · ' + money(l.amount) : '')]; })); }, empty: 'No bill entered in this period.', emptyIcon: 'receipt' });
+        else recList(box, x.veg, { title: function (g) { return h(g.id + ' · ' + money(g.amount)); }, sub: function (g) { return h([g.date, g.lines + ' items', g.party, g.bill ? 'Bill ' + g.bill : '', g.by].filter(Boolean).join(' · ')); },
+          empty: 'No vegetable received in this period.', emptyIcon: 'eco' });
+      }
+      list();
+      return;
+    }
+    B.innerHTML = bar + '<div id="gC"></div>';
+    hubCards($('#gC', B), D.locs.map(function (x) {
+      var t = x.totals;
+      return { key: x.id, icon: x.name === 'GFP' ? 'warehouse' : 'storefront', label: x.name, value: t.grn + t.bills + t.veg,
+        sub: t.grn + ' order GRN' + (t.short ? ' (short ' + num(t.short) + ')' : '') + ' · ' + t.bills + ' bills ' + money(t.billAmount) + ' · ' + t.veg + ' veg ' + money(t.vegAmount) };
+    }), function (k) { st.open = k; st.tab = 'grn'; draw(); });
+    $('#gF', B).onchange = function () { st.from = this.value; st.period = 'c'; load(); };
+    $('#gT', B).onchange = function () { st.to = this.value; st.period = 'c'; load(); };
+    dirOnSel(B, 'gQ', function (v0) { st.period = v0; if (v0 === 'c') return; st.to = todayISO(); st.from = addDaysISO(st.to, -Number(v0)); load(); });
+  }
+  load();
+};
+
+V.dir_closing = function (el, p) {
+  var st = { from: p.from || '', to: p.to || '', kitchen: '', shift: '', view: 'list' }, D = null;
+  el.innerHTML = pageHead('Daily Food Closing', '') + '<div id="fcB">' + loadingHtml('Reading the closing sheet…') + '</div>';
+  var B = $('#fcB', el);
+  function load() {
+    B.innerHTML = loadingHtml('Reading the closing sheet…');
+    live('dir.food', { from: st.from, to: st.to, kitchen: st.kitchen, shift: st.shift }, function (d) { D = d; st.from = d.from; st.to = d.to; draw(); }, { box: B }).catch(function (e) { B.innerHTML = errHtml(e); });
+  }
+  function draw() {
+    var C = D.cards;
+    B.innerHTML = '<div class="fbar"><div class="ff"><label>From</label><input type="date" class="inp sm" id="fcF" value="' + h(D.from) + '"></div>' +
+      '<div class="ff"><label>To</label><input type="date" class="inp sm" id="fcT" value="' + h(D.to) + '"></div>' +
+      dirSel('fcK', 'Kitchen', [['', 'All kitchens']].concat(D.kitchens.map(function (k) { return [k, k]; })), st.kitchen) +
+      dirSel('fcS', 'Shift', [['', 'All shifts']].concat(D.shifts.map(function (k) { return [k, k]; })), st.shift) +
+      dirSel('fcV', 'Filter By', [['list', dirN('Closings', C.closings)], ['items', dirN('Item-wise', D.items.length)]], st.view) + '</div><div id="fcC"></div><div id="fcL" class="mt"></div>';
+    hubCards($('#fcC', B), [
+      { key: 'a', icon: 'fact_check', label: 'Closings', value: C.closings, sub: C.byKitchen.map(function (x) { return h(x.name) + ' ' + x.count; }).join(' · ') || 'None in this period', static: true },
+      { key: 'b', icon: 'today', label: 'Closed today', value: C.today, sub: C.todayList.length ? h(C.todayList.join(' · ')) : 'Nothing closed yet today', static: true },
+      { key: 'c', icon: 'scale', label: 'Quantity closed', value: h(C.qtyText), sub: C.items + ' items · ' + C.lines + ' lines' + (C.noPhoto ? ' · ' + C.noPhoto + ' without photo' : ''), static: true }
+    ]);
+    $('#fcF', B).onchange = function () { st.from = this.value; load(); };
+    $('#fcT', B).onchange = function () { st.to = this.value; load(); };
+    dirOnSel(B, 'fcK', function (v0) { st.kitchen = v0; load(); });
+    dirOnSel(B, 'fcS', function (v0) { st.shift = v0; load(); });
+    dirOnSel(B, 'fcV', function (v0) { st.view = v0; list(); });
+    list();
+  }
+  function list() {
+    var box = $('#fcL', B);
+    if (st.view === 'items') {
+      box.innerHTML = D.items.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Item</th><th class="num">Closed in total</th><th class="num">Times</th><th>Last</th></tr>' + D.items.map(function (it) {
+        return '<tr><td>' + h(it.name) + '<div class="small muted">' + h(it.code) + '</div></td><td class="num b">' + h(it.qtyText) + '</td><td class="num">' + it.times + '</td><td class="small nowrap">' + h(it.last) + '</td></tr>';
+      }).join('') + '</table></div>' : '<div class="card">' + emptyHtml('fact_check', 'No closing in this period.') + '</div>';
+      return;
+    }
+    recList(box, D.rows, {
+      title: function (x) { return h(x.kitchen + ' · ' + x.shift); },
+      sub: function (x) { return h([x.at, x.by, x.lines.length + (x.lines.length === 1 ? ' item' : ' items'), x.id].join(' · ')); },
+      right: function (x) { return chip(x.qtyText, 'blue'); },
+      body: function (e0, x) {
+        e0.innerHTML = '<div class="tbl-wrap"><table class="tbl"><tr><th>Item</th><th class="num">Qty</th><th>Photo</th></tr>' + x.lines.map(function (l) {
+          return '<tr><td>' + h(l.name) + '</td><td class="num nowrap">' + num(l.qty) + ' ' + h(l.unit) + '</td><td>' + (l.photo ? '<a href="' + h(l.photo) + '" target="_blank">' + icon('image') + '</a>' : '<span class="muted small">—</span>') + '</td></tr>';
+        }).join('') + '</table></div>';
+      },
+      empty: 'No closing in this period.', emptyIcon: 'fact_check'
+    });
+    if (D.more) box.insertAdjacentHTML('beforeend', '<div class="small muted mt">Showing the newest 200 — ' + D.more + ' more in this period.</div>');
+  }
+  load();
+};
+
+V.dir_cash = function (el, p) {
+  var st = { mode: 'day', date: '', from: '', to: '' }, D = null;
+  el.innerHTML = pageHead('Cash Management', '') + '<div id="cmB">' + loadingHtml('Reading the cash sheet…') + '</div>';
+  var B = $('#cmB', el);
+  function load() {
+    B.innerHTML = loadingHtml('Reading the cash sheet…');
+    var q = st.mode === 'range' ? { mode: 'range', from: st.from, to: st.to } : { date: st.date };
+    live('dir.cash', q, function (d) { D = d; if (d.mode === 'range') { st.from = d.from; st.to = d.to; } else st.date = d.date; draw(); }, { box: B }).catch(function (e) { B.innerHTML = errHtml(e); });
+  }
+  function statusChip2(s) { return chip(s, /^accepted$/i.test(s) ? 'green' : /^returned$/i.test(s) ? 'red' : 'orange'); }
+  function draw() {
+    var T = D.totals;
+    B.innerHTML = '<div class="fbar">' + dirSel('cmM', 'Filter By', [['day', 'One day'], ['range', 'Date range']], st.mode) +
+      (st.mode === 'range' ? '<div class="ff"><label>From</label><input type="date" class="inp sm" id="cmF" value="' + h(D.from) + '"></div><div class="ff"><label>To</label><input type="date" class="inp sm" id="cmT" value="' + h(D.to) + '"></div>'
+        : '<div class="ff"><label>Business day</label><input type="date" class="inp sm" id="cmD" value="' + h(D.date) + '"></div>') +
+      '<div class="ff grow small muted" style="justify-content:flex-end">' + h(D.store) + '</div></div><div id="cmC"></div><div id="cmL" class="mt"></div>';
+    hubCards($('#cmC', B), [
+      { key: 'o', icon: 'login', label: 'Opening issued', value: money(T.opening), sub: st.mode === 'day' ? h(D.dateText) : h(fmtISO(D.from) + ' – ' + fmtISO(D.to)), static: true },
+      { key: 'c', icon: 'logout', label: 'Closing received', value: money(T.closing), sub: 'net cash ' + money(T.net), static: true },
+      { key: 'd', icon: 'balance', label: 'Short / Excess', value: money(T.short), sub: 'short · ' + money(T.excess) + ' excess', static: true },
+      { key: 'p', icon: 'pending_actions', label: 'Waiting to be accepted', value: T.pending, sub: (T.returned ? T.returned + ' returned · ' : '') + (D.waiting ? D.waiting + ' from earlier days' : T.entries + ' entries'), static: true }
+    ]);
+    dirOnSel(B, 'cmM', function (v0) { st.mode = v0; load(); });
+    if ($('#cmD', B)) $('#cmD', B).onchange = function () { st.date = this.value; load(); };
+    if ($('#cmF', B)) $('#cmF', B).onchange = function () { st.from = this.value; load(); };
+    if ($('#cmT', B)) $('#cmT', B).onchange = function () { st.to = this.value; load(); };
+    var box = $('#cmL', B);
+    if (D.mode === 'day') {
+      box.innerHTML = '<div class="grid g2 cash-g">' + D.slots.map(function (s) {
+        function row(label, e) {
+          if (!e) return '<div class="cash-r none"><span class="grow"><b>' + label + '</b><span class="tiny muted">Not prepared yet</span></span></div>';
+          return '<div class="cash-r" data-e="' + h(e.id) + '"><span class="grow"><b>' + label + '</b><span class="tiny muted">' + h([e.by ? 'by ' + e.by : '', e.acceptedBy ? (e.type === 'OPENING' ? 'accepted by ' : 'received by ') + e.acceptedBy : ''].filter(Boolean).join(' · ')) + '</span></span>' +
+            '<b class="nowrap">' + money(e.amount) + '</b>' + (e.difference ? chip((e.difference < 0 ? 'Short ' : 'Excess ') + money(Math.abs(e.difference)), e.difference < 0 ? 'red' : 'blue') : '') + statusChip2(e.status) + '</div>';
+        }
+        return '<div class="card cash-slot"><div class="row mb"><b class="grow">' + h(s.counter) + '</b><span class="small muted">' + h(s.shiftLabel) + '</span></div>' +
+          row('Opening', s.opening) + row('Closing', s.closing) +
+          '<div class="row small mt"><span class="grow muted">Net cash (closing − opening)</span><b>' + (s.net === null ? '—' : money(s.net)) + '</b></div></div>';
+      }).join('') + '</div>';
+      $$('[data-e]', box).forEach(function (r) { r.onclick = function () { entry(r.dataset.e); }; });
+      return;
+    }
+    box.innerHTML = (D.days.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Day</th><th class="num">Opening</th><th class="num">Closing</th><th class="num">Net cash</th><th class="num">Short</th><th class="num">Excess</th><th class="num">Waiting</th></tr>' +
+      D.days.map(function (x) {
+        return '<tr><td class="nowrap">' + h(x.dateText) + '</td><td class="num">' + money(x.opening) + '</td><td class="num">' + money(x.closing) + '</td><td class="num b">' + money(x.net) + '</td>' +
+          '<td class="num">' + (x.short ? '<b style="color:var(--red)">' + money(x.short) + '</b>' : '—') + '</td><td class="num">' + (x.excess ? money(x.excess) : '—') + '</td><td class="num">' + (x.pending || '—') + '</td></tr>';
+      }).join('') + '<tfoot><tr><td>Total</td><td class="num">' + money(T.opening) + '</td><td class="num">' + money(T.closing) + '</td><td class="num">' + money(T.net) + '</td><td class="num">' + money(T.short) + '</td><td class="num">' + money(T.excess) + '</td><td class="num">' + T.pending + '</td></tr></tfoot></table></div>'
+      : '') + '<div class="section-title">Entries (' + D.entries.length + ')</div><div id="cmE"></div>';
+    recList($('#cmE', box), D.entries, {
+      title: function (e) { return h((e.type === 'OPENING' ? 'Opening' : 'Closing') + ' · ' + e.counter + ' · Shift ' + e.shift); },
+      sub: function (e) { return h([fmtISO(e.date), e.id, e.by ? 'by ' + e.by : '', e.acceptedBy ? 'accepted by ' + e.acceptedBy : ''].filter(Boolean).join(' · ')); },
+      right: function (e) { return '<b class="nowrap">' + money(e.amount) + '</b> ' + statusChip2(e.status); },
+      body: function (e0, e) { lines(e0, e.id); },
+      empty: 'No cash entry in this period.', emptyIcon: 'payments'
+    });
+  }
+  function linesHtml(r) {
+    var e = r.entry;
+    return kvHtml([['Entry', e.id + ' · ' + (e.type === 'OPENING' ? 'Opening' : 'Closing')], ['Day · shift · counter', fmtISO(e.date) + ' · Shift ' + e.shift + ' · ' + e.counter],
+      ['Prepared', money(e.declared) + (e.by ? ' · ' + e.by : '') + (e.at ? ' · ' + e.at : '')], ['Accepted', e.received === null ? 'Not yet' : money(e.received) + (e.acceptedBy ? ' · ' + e.acceptedBy : '') + (e.acceptedAt ? ' · ' + e.acceptedAt : '')],
+      ['Difference', e.difference === null ? '—' : (e.difference < 0 ? 'Short ' : e.difference > 0 ? 'Excess ' : '') + money(Math.abs(e.difference))], ['Status', e.status],
+      e.remarks ? ['Remarks', e.remarks] : null, e.officeRemarks ? ['Office remarks', e.officeRemarks] : null]) +
+      (r.lines.length ? '<div class="tbl-wrap mt"><table class="tbl"><tr><th>Denomination</th><th class="num">Prepared</th><th class="num">Amount</th><th class="num">Accepted</th><th class="num">Amount</th></tr>' + r.lines.map(function (l) {
+        var diff = l.accepted !== null && l.declared !== null && l.accepted !== l.declared;
+        return '<tr><td>' + h(l.label) + '</td><td class="num">' + (l.declared === null ? '—' : num(l.declared)) + '</td><td class="num">' + (l.declaredAmount === null ? '—' : money(l.declaredAmount)) + '</td>' +
+          '<td class="num"' + (diff ? ' style="color:var(--red);font-weight:700"' : '') + '>' + (l.accepted === null ? '—' : num(l.accepted)) + '</td><td class="num">' + (l.acceptedAmount === null ? '—' : money(l.acceptedAmount)) + '</td></tr>';
+      }).join('') + '</table></div>' : '<div class="small muted mt">No denomination count saved.</div>');
+  }
+  function lines(box, id) {
+    box.innerHTML = loadingHtml();
+    api('dir.cashLines', { id: id }).then(function (r) { box.innerHTML = linesHtml(r); }).catch(function (e) { box.innerHTML = errHtml(e); });
+  }
+  function entry(id) {
+    var m = modal({ title: 'Cash entry ' + id, wide: true, body: '<div id="cmX">' + loadingHtml() + '</div>' });
+    lines($('#cmX', m.el), id);
+  }
+  load();
+};
+
+V.dir_orders = function (el, p) {
+  var st = { day: p.day || 'today', outlet: '', state: '' };
+  el.innerHTML = pageHead('Orders Summary', '') + '<div id="doB">' + loadingHtml() + '</div>';
+  var B = $('#doB', el), D = null;
+  function load() { B.innerHTML = loadingHtml('Reading the orders…'); live('dir.orders', { day: st.day }, function (d) { D = d; draw(); }, { box: B }).catch(function (e) { B.innerHTML = errHtml(e); }); }
+  function draw() {
+    var T = D.totals;
+    B.innerHTML = '<div class="fbar">' + dirSel('doD', 'Day', [['today', 'Today'], ['yesterday', 'Yesterday']], st.day) +
+      (D.outlets.length > 1 ? dirSel('doO', 'Outlet', [['', 'All outlets']].concat(D.outlets.map(function (o) { return [o.name, o.name + ' (' + o.count + ')']; })), st.outlet) : '') +
+      dirSel('doS', 'Filter By', [['', dirN('All', T.orders)], ['To dispatch', dirN('To dispatch', T.pending)], ['Part dispatched', dirN('Part dispatched', T.part)], ['Dispatched', dirN('Dispatched', T.dispatched)]], st.state) + '</div>' +
+      (D.ndError ? '<div class="warn mb">' + icon('error') + ' Item Not Dispatch: ' + h(D.ndError) + '</div>' : '') + '<div id="doK"></div><div class="section-title">' + h(D.dateText) + '</div><div id="doL"></div>';
+    hubCards($('#doK', B), [
+      { key: 'a', icon: 'receipt_long', label: 'Orders', value: T.orders, sub: D.outlets.map(function (o) { return h(o.name) + ' ' + o.count; }).join(' · ') || 'No order', static: true },
+      { key: 'b', icon: 'local_shipping', label: 'Dispatched', value: T.dispatched, sub: T.part + ' part · ' + T.pending + ' to dispatch', static: true },
+      { key: 'c', icon: 'remove_shopping_cart', label: 'Items not dispatched', value: T.ndLines, sub: D.reasons.slice(0, 3).map(function (r) { return h(r.name) + ' ' + r.count; }).join(' · ') || 'Nothing recorded', static: true }
+    ]);
+    dirOnSel(B, 'doD', function (v0) { st.day = v0; st.outlet = ''; load(); });
+    dirOnSel(B, 'doO', function (v0) { st.outlet = v0; list(); });
+    dirOnSel(B, 'doS', function (v0) { st.state = v0; list(); });
+    list();
+  }
+  function list() {
+    var L = D.orders.filter(function (o) { return (!st.outlet || o.outlet === st.outlet) && (!st.state || o.state === st.state); }), box = $('#doL', B);
+    box.innerHTML = L.length ? '<div class="grid g3 dord">' + L.map(function (o, i) {
+      var k = o.state === 'Dispatched' ? 'green' : o.state === 'Part dispatched' ? 'orange' : 'blue';
+      return '<div class="card dord-c" data-o="' + i + '"><div class="row"><div class="grow"><h3 style="margin:0">' + h(o.no) + '</h3><div class="small muted">' + h(o.outlet + ' · ' + o.time.slice(-8) + (o.by ? ' · ' + o.by : '')) + '</div></div>' + statusChip(o.status) + '</div>' +
+        '<div class="row mt small" style="flex-wrap:wrap;gap:6px">' + chip(o.state, k) + chip(o.items + ' items', 'grey') + chip('Ordered ' + num(o.qty), 'grey') + chip('Sent ' + num(o.dispatched), o.dispatched ? 'green' : 'grey') +
+        (o.ndLines ? chip(o.ndLines + ' not dispatched', 'red') : '') + '</div></div>';
+    }).join('') + '</div>' : '<div class="card">' + emptyHtml('receipt_long', 'No GFP order here on ' + D.dateText + '.') + '</div>';
+    $$('[data-o]', box).forEach(function (c) { c.onclick = function () { lines(L[+c.dataset.o]); }; });
+  }
+  function lines(o) {
+    modal({ title: o.no + ' · ' + o.outlet, wide: true, body: '<div class="kv mb"><b>Ordered</b><span>' + h(o.time) + (o.by ? ' · ' + h(o.by) : '') + '</span><b>Status</b><span>' + statusChip(o.status) + ' ' + chip(o.state, 'blue') + '</span></div>' +
+      '<div class="tbl-wrap"><table class="tbl"><tr><th>Item</th><th class="num">Ordered</th><th class="num">Dispatched</th><th class="num">Not sent</th><th>Reason</th></tr>' +
+      o.lines.map(function (l) {
+        var dq = l.disp === null || l.disp === undefined ? '' : l.disp, short = dq !== '' && Number(dq) < Number(l.qty);
+        return '<tr><td>' + h(l.name) + '<div class="small muted">' + h(l.code || '') + '</div></td><td class="num nowrap">' + num(l.qty) + ' ' + h(l.unit) + '</td>' +
+          '<td class="num">' + (dq === '' ? '<span class="muted">—</span>' : '<b style="color:' + (short ? 'var(--orange)' : 'var(--green)') + '">' + num(dq) + '</b>') + '</td>' +
+          '<td class="num">' + (l.nd ? '<b style="color:var(--red)">' + num(l.nd) + '</b>' : '—') + '</td><td class="small">' + h([l.reason, l.remark].filter(Boolean).join(' · ')) + '</td></tr>';
+      }).join('') + '</table></div>' });
+  }
+  load();
+};
+
+V.dir_fms = function (el) {
+  var nav = S.nav, view = '', sub = '';
+  el.innerHTML = pageHead('FMS Summary', '', '<button class="btn sm ghost" id="dfR">' + icon('sync') + 'Refresh</button>') + '<div id="dfB">' + loadingHtml('Reading the FMS sheets…') + '</div>';
+  var B = $('#dfB', el), D = null;
+  function load(force) {
+    var take = function (d) { D = d; if (S.nav === nav) paint(); };
+    if (force) return api('dir.fms', { force: true }).then(function (d) { dcSet(dcKey('dir.fms', {}), d); take(d); });
+    return live('dir.fms', {}, take, { alive: function () { return S.nav === nav; } }).catch(function (e) { B.innerHTML = errHtml(e); });
+  }
+  $('#dfR', el).onclick = function () { var bt = this; busy(bt, true); load(true).then(function () { busy(bt, false); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); }); };
+  function paint() {
+    if (view) return detail();
+    var I = D.indent, O = D.onboarding, X = D.dispatch;
+    B.innerHTML = '<div id="dfC"></div>';
+    hubCards($('#dfC', B), [
+      { key: 'indent', icon: 'assignment_add', label: 'Indent to Offer Letter', value: I.error ? '—' : I.dueWeek, sub: I.error ? h(I.error) : 'pending this week · ' + I.overdue + ' overdue · ' + I.offersMonth + ' offer letters sent this month' },
+      { key: 'onboard', icon: 'hourglass_top', label: 'Onboarding to Probation', value: O.error ? '—' : O.probation, sub: O.error ? h(O.error) : 'under probation · ' + O.joined.length + ' joined this month' },
+      { key: 'dispatch', icon: 'local_shipping', label: 'Outlet Order to Dispatch', value: X.error ? '—' : X.week.overdue,
+        sub: X.error ? h(X.error) : 'overdue steps this week · today ' + X.today.pending + ' pending · ' + X.today.overdue + ' overdue' }
+    ], function (k) { view = k; sub = ''; paint(); });
+  }
+  function steps(list, title) {
+    return '<div class="card mb"><h3>' + icon('account_tree') + ' ' + h(title) + '</h3>' + (list || []).map(function (s) {
+      return '<div class="row small" style="margin:6px 0;gap:8px"><span class="grow">' + s.n + '. ' + h(s.name) + '</span>' + (s.overdue ? chip(s.overdue + ' overdue', 'red') : '') + (s.pending ? chip(s.pending + ' pending', 'orange') : '') + chip(s.done + ' done', 'green') + '</div>';
+    }).join('') + '</div>';
+  }
+  function detail() {
+    var T = { indent: ['Indent to Offer Letter', 'assignment_add'], onboard: ['Onboarding to Probation', 'hourglass_top'], dispatch: ['Outlet Order to Dispatch', 'local_shipping'] }[view];
+    var bx = hubPanel(B, T[0], T[1], function () { view = ''; paint(); });
+    if (view === 'indent') {
+      var I = D.indent, now = Date.now(), wEnd = new Date(dirWeekRange().mon.replace(/-/g, '/')).getTime() + 7 * 86400000 - 1;
+      if (I.error) { bx.innerHTML = errHtml(I.error); return; }
+      sub = sub || 'week';
+      bx.innerHTML = '<div class="fbar">' + dirSel('fiS', 'Filter By', [['week', dirN('Pending this week', I.dueWeek)], ['late', dirN('Overdue', I.overdue)], ['offers', dirN('Offer letter sent this month', I.offersMonth)]], sub) + '</div><div id="fiL"></div>';
+      dirOnSel(bx, 'fiS', function (v0) { sub = v0; list(); });
+      function list() {
+        var box = $('#fiL', bx);
+        if (sub === 'offers') return recList(box, I.offers, { title: function (x) { return h(x.pos); }, sub: function (x) { return h(x.place + ' · offer letter sent ' + x.when); }, right: function () { return chip('Sent', 'green'); }, empty: 'No offer letter sent this month.', emptyIcon: 'description' });
+        var L = I.list.filter(function (x) { return sub === 'late' ? !!x.late : x.due && x.due >= now && x.due <= wEnd; });
+        recList(box, L, { title: function (x) { return h(x.pos + ' · ' + x.place); }, sub: function (x) { return h(['Step ' + x.stepNo + '/' + x.of + ' · ' + x.step, x.dueText ? 'due ' + x.dueText : '', x.raised ? 'raised ' + x.raised : '', x.by ? 'by ' + x.by : ''].filter(Boolean).join(' · ')); },
+          right: function (x) { return x.late ? chip(x.late + ' late', 'red') : chip('Due ' + x.dueText.split(',')[0], 'orange'); }, empty: sub === 'late' ? 'Nothing overdue.' : 'Nothing due for the rest of this week.', emptyIcon: 'task_alt' });
+      }
+      list();
+    } else if (view === 'onboard') {
+      var O = D.onboarding;
+      if (O.error) { bx.innerHTML = errHtml(O.error); return; }
+      sub = sub || 'prob';
+      bx.innerHTML = '<div class="fbar">' + dirSel('foS', 'Filter By', [['prob', dirN('Under probation', O.probation)], ['joined', dirN('Joined this month', O.joined.length)], ['late', dirN('Late steps', O.late.length)]], sub) + '</div><div id="foL"></div>';
+      dirOnSel(bx, 'foS', function (v0) { sub = v0; list2(); });
+      function list2() {
+        var box = $('#foL', bx);
+        if (sub === 'prob') recList(box, O.probationList, { title: function (x) { return h(x.name); }, sub: function (x) { return h([x.pos, x.place, x.when ? 'joined ' + x.when : ''].filter(Boolean).join(' · ')); }, right: function (x) { return chip(x.status || 'Probation', 'orange'); }, empty: 'Nobody on probation.' });
+        else if (sub === 'joined') recList(box, O.joined, { title: function (x) { return h(x.name); }, sub: function (x) { return h([x.pos, x.place, x.when, x.step].filter(Boolean).join(' · ')); }, right: function (x) { return x.came ? chip(x.came, /yes/i.test(x.came) ? 'green' : 'grey') : ''; }, empty: 'Nobody joined this month yet.' });
+        else recList(box, O.late, { title: function (x) { return h(x.label); }, sub: function (x) { return h(x.step + ' · planned ' + x.planned); }, right: function (x) { return chip(x.late + ' late', 'red'); }, empty: 'Nothing late.', emptyIcon: 'task_alt' });
+      }
+      list2();
+    } else {
+      var X = D.dispatch;
+      if (X.error) { bx.innerHTML = errHtml(X.error); return; }
+      var W = X.week, today = X.list.filter(function (x) { return x.today; });
+      var sets = { tp: today.filter(function (x) { return x.state === 'pending'; }), to: today.filter(function (x) { return x.state === 'overdue'; }),
+        wo: X.list.filter(function (x) { return x.state === 'overdue'; }), wp: X.list.filter(function (x) { return x.state === 'pending'; }) };
+      sub = sub || (sets.to.length || !sets.tp.length ? 'to' : 'tp');
+      bx.innerHTML = '<div class="fbar">' + dirSel('fdS', 'Filter By', [['tp', dirN('Today · pending steps', sets.tp.length)], ['to', dirN('Today · overdue steps', sets.to.length)],
+          ['wo', dirN('This week · overdue steps', sets.wo.length)], ['wp', dirN('This week · pending steps', sets.wp.length)], ['steps', 'This week · step by step']], sub) +
+        '<div class="ff grow small muted" style="justify-content:flex-end">This week ' + h(X.weekText) + ' · ' + W.orders + ' orders · ' + W.done + ' steps done · ' + W.overdue + ' overdue · ' + W.pending + ' pending</div></div><div id="fdL"></div>';
+      dirOnSel(bx, 'fdS', function (v0) { sub = v0; list3(); });
+      function list3() {
+        var box = $('#fdL', bx);
+        if (sub === 'steps') { box.innerHTML = steps(X.steps, 'This week · ' + X.weekText); return; }
+        recList(box, sets[sub], { title: function (x) { return h(x.order + (x.outlet ? ' · ' + x.outlet : '')); },
+          sub: function (x) { return h(['Step ' + x.stepNo + '/' + x.of + ' · ' + x.step, 'planned ' + x.planned, x.date ? 'ordered ' + x.date : '', x.items ? x.items + ' items' : ''].filter(Boolean).join(' · ')); },
+          right: function (x) { return x.late ? chip(x.late + ' late', 'red') : chip('Pending', 'orange'); }, empty: 'Nothing here.', emptyIcon: 'task_alt' });
+        if (X.more && sub.charAt(0) === 'w') box.insertAdjacentHTML('beforeend', '<div class="small muted mt">' + X.more + ' more steps this week are not listed.</div>');
+      }
+      list3();
+    }
+  }
+  load(false);
+};
+
+V.empview = function (el) {
+  var L = null, st = { q: '', place: '', role: '' };
+  el.innerHTML = pageHead('Employee View', '') + '<div id="evB">' + loadingHtml() + '</div>';
+  var B = $('#evB', el);
+  live('ev.list', {}, function (d) { L = d; paint(); }, { alive: function () { return document.body.contains(B); } }).catch(function (e) { B.innerHTML = errHtml(e); });
+  function paint() {
+    B.innerHTML = '<div class="fbar"><div class="ff grow"><label>Search</label><input class="inp sm" id="evQ" placeholder="Name, employee ID, designation…" value="' + h(st.q) + '"></div>' +
+      '<div class="ff"><label>Location</label><select class="inp sm" id="evP"><option value="">All</option>' + L.places.map(function (p) { return '<option' + (p === st.place ? ' selected' : '') + '>' + h(p) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="ff"><label>Role</label><select class="inp sm" id="evR"><option value="">All</option>' + L.roles.map(function (p) { return '<option' + (p === st.role ? ' selected' : '') + '>' + h(p) + '</option>'; }).join('') + '</select></div></div><div id="evL"></div>';
+    $('#evQ', B).oninput = debounce(function () { st.q = val('#evQ', B).toLowerCase(); rows(); }, 150);
+    $('#evP', B).onchange = function () { st.place = this.value; rows(); };
+    $('#evR', B).onchange = function () { st.role = this.value; rows(); };
+    rows();
+  }
+  function rows() {
+    var R = L.list.filter(function (u) {
+      if (st.place && u.place !== st.place) return false;
+      if (st.role && u.role !== st.role) return false;
+      if (st.q && (u.name + ' ' + u.empId + ' ' + u.designation + ' ' + u.dept).toLowerCase().indexOf(st.q) < 0) return false;
+      return true;
+    });
+    recList($('#evL', B), R.slice(0, 200), {
+      title: function (u) { return h(u.name); },
+      sub: function (u) { return h([u.designation || u.role, u.dept, u.place, u.empId].filter(Boolean).join(' · ')); },
+      right: function (u) { return '<button class="btn sm soft" data-ev="' + h(u.uid) + '">' + icon('visibility') + 'View</button>'; },
+      empty: 'Nobody matches.'
+    });
+    $$('[data-ev]', B).forEach(function (bt) { bt.onclick = function (e) { e.stopPropagation(); viewAs(bt.dataset.ev, bt); }; });
+  }
+};
+</script>

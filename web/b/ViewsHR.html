@@ -1,0 +1,1228 @@
+<script>
+/* =====================================================================
+   HR · Employees (the Employee Manager app) · Attendance Manager
+   (the Attendance Report app) — same sheets, same rules, one login.
+   ===================================================================== */
+
+/* ---------------- shared bits ---------------- */
+var EMP_DOCS = ['Aadhar Card Front (Link)', 'Aadhar Card Back (Link)', 'Pan Card Upload (Link)', 'Additional Documents (Links)'];
+var EMP_DOC_NAME = { 'Aadhar Card Front (Link)': 'Aadhar front', 'Aadhar Card Back (Link)': 'Aadhar back', 'Pan Card Upload (Link)': 'PAN card', 'Additional Documents (Links)': 'Other documents' };
+var EMP_SALARY_RE = /salary|basic|allowance|pf \(|esic|refund/i;
+var EMP_READONLY = ['Status', 'Employee Id', 'Outlet ID'];
+var EMP_GROUPS = [
+  ['Work', 'badge', ['Designation', 'Department', 'Location', 'Date Of Joining', 'PF Applicable', 'IT Equipment']],
+  ['Contact', 'call', ['Phone No.', 'Email Address', "Father/Husband's Name", "Father's Phone Number"]],
+  ['Personal', 'person', ['Date of Birth', 'Gender', 'Blood Group', 'Highest Qualification', 'Shirt Size', 'Trouser Size', 'Shoe Size']],
+  ['Address', 'home', ['Permanent Address', 'Current Address']],
+  ['Bank & identity', 'account_balance', ['Bank Name', 'AC Num', 'IFSC', 'Aadhar Card', 'Pan']]
+];
+var EMP_REVIEW_TAB = 'Under Review';
+function tpHtml(v, dis) {
+  var m = /^(\d{1,2}):(\d{2})/.exec(String(v || '')), hh = m ? Number(m[1]) : null, mm = m ? Number(m[2]) : null, ap = hh !== null && hh >= 12 ? 'PM' : 'AM';
+  var h12 = hh === null ? '' : (hh % 12 || 12), mins = [];
+  for (var i = 0; i < 60; i += 5) mins.push(i);
+  if (mm !== null && mins.indexOf(mm) < 0) { mins.push(mm); mins.sort(function (a, b) { return a - b; }); }
+  var d0 = dis ? ' disabled' : '';
+  return '<span class="tpick"><select class="inp sm" data-th' + d0 + '><option value="">--</option>' + [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(function (x) { return '<option' + (x === h12 ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select>' +
+    '<b>:</b><select class="inp sm" data-tm' + d0 + '>' + mins.map(function (x) { return '<option value="' + x + '"' + (x === mm || (mm === null && x === 0) ? ' selected' : '') + '>' + pad2(x) + '</option>'; }).join('') + '</select>' +
+    '<select class="inp sm" data-ta' + d0 + '><option' + (ap === 'AM' ? ' selected' : '') + '>AM</option><option' + (ap === 'PM' ? ' selected' : '') + '>PM</option></select></span>';
+}
+function tpVal(box) {
+  var hEl = $('[data-th]', box), mEl = $('[data-tm]', box), aEl = $('[data-ta]', box);
+  if (!hEl || !hEl.value) return '';
+  var hh = Number(hEl.value) % 12 + (aEl.value === 'PM' ? 12 : 0);
+  return pad2(hh) + ':' + pad2(Number(mEl.value) || 0);
+}
+function tpText(v) {
+  var m = /^(\d{1,2}):(\d{2})/.exec(String(v || '')); if (!m) return '';
+  var hh = Number(m[1]); return pad2(hh % 12 || 12) + ':' + m[2] + ' ' + (hh >= 12 ? 'PM' : 'AM');
+}
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+function empShiftPanel(x, after) {
+  x.innerHTML = loadingHtml();
+  api('emp.shifts').then(function (d) {
+    var cur = '';
+    var byId = {}; d.people.forEach(function (p0) { byId[p0.employeeId] = p0; });
+    var groups = {}; d.people.forEach(function (p0) { (groups[p0.group] = groups[p0.group] || []).push(p0); });
+    function list() {
+      var L = d.people.filter(function (p0) { return p0.mode !== 'auto'; });
+      $('[data-esl]', x).innerHTML = L.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Employee</th><th>Punch in</th><th>Punch out</th>' + (d.canEdit ? '<th></th>' : '') + '</tr></thead><tbody>' +
+        L.map(function (p0) {
+          var tin = p0.mode === 'own' ? tpText(p0.start) : p0.mode === 'shift' ? p0.shift : 'No shift checks', tout = p0.mode === 'own' ? tpText(p0.end) : '';
+          return '<tr><td><b>' + h(p0.name) + '</b><div class="tiny muted">' + h([p0.employeeId, p0.designation, p0.group].filter(Boolean).join(' · ')) + '</div>' +
+            (p0.notes ? '<div class="tiny muted">' + h(p0.notes) + '</div>' : '') + '</td>' +
+            '<td class="nowrap">' + h(tin) + '</td><td class="nowrap">' + h(tout) + '</td>' +
+            (d.canEdit ? '<td><div class="row gap6" style="justify-content:flex-end;flex-wrap:nowrap"><button class="btn sm ghost" data-ed="' + h(p0.employeeId) + '" title="Change">' + icon('edit') + '<span class="nolbl">Change</span></button><button class="icon-btn" data-rm="' + h(p0.employeeId) + '" title="Remove">' + icon('delete') + '</button></div></td>' : '') + '</tr>';
+        }).join('') + '</tbody></table></div>' : '<div class="card">' + emptyHtml('schedule', 'Nobody has an own timing yet.') + '</div>';
+      $$('[data-ed]', x).forEach(function (bt) { bt.onclick = function () { pick(bt.dataset.ed); x.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
+      $$('[data-rm]', x).forEach(function (bt) {
+        bt.onclick = function () {
+          var p0 = byId[bt.dataset.rm];
+          confirmBox('Remove ' + p0.name + '\'s timing?', 'Their punches are then matched to the nearest shift of ' + h(p0.group) + '.', 'Remove', true).then(function (ok) {
+            if (!ok) return;
+            save([{ employeeId: p0.employeeId, mode: 'auto' }], bt);
+          });
+        };
+      });
+    }
+    function pick(id) {
+      cur = id; var p0 = byId[id];
+      $('[data-esp]', x).value = id;
+      $('[data-esin]', x).innerHTML = tpHtml(p0 && p0.mode === 'own' ? p0.start : '');
+      $('[data-esout]', x).innerHTML = tpHtml(p0 && p0.mode === 'own' ? p0.end : '');
+      $('[data-esn]', x).value = p0 ? p0.notes || '' : '';
+    }
+    function save(rows, btn) {
+      busy(btn, true);
+      api('emp.shiftSave', { rows: rows }).then(function (r) { toast(r.message, 'ok'); if (after) after(); empShiftPanel(x, after); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    }
+    x.innerHTML = (d.canEdit ? '<div class="card"><h3>' + icon('more_time') + ' Set a timing</h3><div class="form-grid esg">' +
+      '<div class="field"><label>Employee</label><select class="inp" data-esp><option value="">Pick an employee</option>' + Object.keys(groups).sort().map(function (g) {
+        return '<optgroup label="' + h(g) + '">' + groups[g].map(function (p0) { return '<option value="' + h(p0.employeeId) + '">' + h(p0.name + ' · ' + p0.employeeId + (p0.designation ? ' · ' + p0.designation : '')) + '</option>'; }).join('') + '</optgroup>';
+      }).join('') + '</select></div>' +
+      '<div class="field"><label>Punch in</label><div data-esin>' + tpHtml('') + '</div></div><div class="field"><label>Punch out</label><div data-esout>' + tpHtml('') + '</div></div>' +
+      '<div class="field full"><label>Notes</label><input class="inp" data-esn></div></div>' +
+      '<div class="row"><span class="grow"></span><button class="btn green" data-ess>' + icon('save') + 'Save timing</button></div></div>' : '') +
+      '<div class="section-title">Own timings</div><div data-esl></div>';
+    if (d.canEdit) {
+      $('[data-esp]', x).onchange = function () { pick(this.value); };
+      $('[data-ess]', x).onclick = function () {
+        var id = $('[data-esp]', x).value, st = tpVal($('[data-esin]', x)), en = tpVal($('[data-esout]', x));
+        if (!id) return toast('Pick the employee.', 'bad');
+        if (!st || !en) return toast('Pick the punch in and punch out time.', 'bad');
+        save([{ employeeId: id, mode: 'own', start: st, end: en, notes: val('[data-esn]', x) }], this);
+      };
+    }
+    list();
+  }).catch(function (e) { x.innerHTML = errHtml(e); });
+}
+function empLinks(v) { return String(v || '').split(/[\n,]+/).map(function (s) { return s.trim(); }).filter(function (s) { return /[-\w]{25,}/.test(s); }); }
+function kpiBox(label, value, ic, cls, sub, key) {
+  return '<div class="kpi ' + (cls || '') + (key ? ' click" data-kpi="' + key : '') + '">' + (ic ? icon(ic) : '') + '<div class="l">' + h(label) + '</div><div class="v">' + value + '</div>' + (sub ? '<div class="s">' + sub + '</div>' : '') + '</div>';
+}
+/** A file from this device → { name, mime, data } (photos are made smaller first). */
+function pickFile(accept, done) {
+  var inp = document.createElement('input'); inp.type = 'file'; inp.accept = accept || 'image/*,application/pdf';
+  inp.onchange = function () {
+    var f = inp.files && inp.files[0]; if (!f) return;
+    if (f.size > 15 * 1048576) return toast('"' + f.name + '" is larger than 15 MB.', 'bad');
+    (/^image\//.test(f.type) ? shrinkImage(f, 2000, 0.85) : readB64(f).then(function (d) { return { data: d, mime: f.type || 'application/octet-stream', name: f.name }; }))
+      .then(done).catch(function (e) { toast(e.message, 'bad'); });
+  };
+  inp.click();
+}
+
+/* =====================================================================
+   EMPLOYEES
+   ===================================================================== */
+var EMP_LOCS = [['hq', 'Bhanpuri · HQ', 'apartment', /\bhq\b|head office/i], ['gfp', 'Bhanpuri · GFP', 'factory', /gfp/i], ['pandri', 'Pandri', 'storefront', /pandri/i], ['chanderi', 'Chanderi', 'storefront', /chanderi/i]];
+function empLocOf(key) { return EMP_LOCS.filter(function (x) { return x[0] === key; })[0] || null; }
+V.employees = function (el, p) {
+  var tab = p.tab === 'overview' ? '' : (p.tab || ''), loc = p.loc || '', nav = S.nav;
+  el.innerHTML = pageHead('Employees', '') + '<div id="eb"></div>';
+  var E = $('#eb', el);
+  var TOOLS = { search: ['Search & edit', 'person_search'], assets: ['Assets', 'devices'], salary: ['PF / Salary breakup', 'savings'], shifts: ['Shift timings', 'schedule'],
+    changes: [perm('empApprover') ? 'Changes & tracking' : 'My changes & tracking', 'manage_accounts'] };
+  function stats() { return cached('empStats', function () { return api('emp.stats'); }); }
+  function back() { tab = ''; loc = ''; delete S.params.tab; delete S.params.loc; show(); }
+  function open(t, l) { tab = t; S.params.tab = t; loc = l || ''; if (l) S.params.loc = l; else delete S.params.loc; show(); }
+  function show() {
+    if (!tab) return landing();
+    if (tab === 'joining') {
+      E.innerHTML = loadingHtml();
+      return loadBundle('ViewsApprove').then(function () { if (S.nav === nav) apprBoard(E, {}, { only: 'join', back: back }); }).catch(function (e) { E.innerHTML = errHtml(e); });
+    }
+    if (tab === 'loc') return empLocList(hubPanel(E, 'Employees', 'groups', back), loc);
+    var T = TOOLS[tab]; if (!T) return back();
+    var b = hubPanel(E, T[0], T[1], back);
+    if (tab === 'search') return empSearchTab(b, p.q || '');
+    if (tab === 'assets') return assetTab(b);
+    if (tab === 'salary') return salaryTab(b);
+    if (tab === 'shifts') return shiftTab(b);
+    if (tab === 'changes') return changesTab(b);
+  }
+  function landing() {
+    E.innerHTML = '<div id="eLc"></div>';
+    var S0 = null, J = null, C = null;
+    function paint() {
+      if (!document.body.contains(E) || tab) return;
+      var tot = S0 ? S0.byLocation.filter(function (r) { return EMP_LOCS.some(function (x) { return x[3].test(r.location); }); }).reduce(function (a, r) { return a + r.count; }, 0) : null;
+      var jc = J && J.cards && J.cards[0], cards = [{ key: 'loc', icon: 'groups', label: 'Employees', value: S0 ? tot : '…', sub: 'HQ · GFP · Pandri · Chanderi' }];
+      if (perm('empApprover') || perm('empNeedsOk')) cards.push({ key: 'changes', icon: 'manage_accounts', label: TOOLS.changes[0], value: C ? C.pending : '…', sub: 'Pending changes' });
+      if (perm('payroll')) cards.push({ key: 'salary', icon: 'savings', label: 'PF / Salary breakup', value: icon('chevron_right'), sub: 'Payroll' });
+      cards.push({ key: 'assets', icon: 'devices', label: 'Assets', value: icon('chevron_right'), sub: 'SIM · phone · laptop' });
+      cards.push({ key: 'form', icon: 'link', label: 'New Employee Joining Form', value: icon('chevron_right'), sub: 'Link for the new joiner' });
+      cards.push({ key: 'joining', icon: 'how_to_reg', label: 'New Employee Joining Approval', value: J ? (jc ? jc.all : 0) : '…', sub: J ? (jc && jc.total ? jc.total + ' waiting for you' : 'Pending') : '', badge: jc && jc.total ? chip(String(jc.total), 'orange') : '' });
+      hubCards($('#eLc', E), cards, function (k) { if (k === 'form') return joinLink(); open(k); });
+    }
+    paint();
+    stats().then(function (s) { S0 = s; paint(); }).catch(function (e) { $('#eLc', E).innerHTML = errHtml(e); });
+    live('appr.hub', { only: 'join' }, function (d) { J = d; setBadge('employees', d.total); paint(); }, { alive: function () { return S.nav === nav && !tab; } }).catch(function () { J = { cards: [] }; paint(); });
+    if (perm('empApprover') || perm('empNeedsOk')) api('emp.changes').then(function (d) { C = d; paint(); }).catch(function () {});
+  }
+
+  function changesTab(b) {
+    b.innerHTML = loadingHtml();
+    var show = S.cache.echShow || (perm('empApprover') ? 'me' : 'all');
+    live('emp.changes', {}, function (d) {
+      var F = [['me', 'Waiting for me', function (x) { return x.canDecide; }], ['pending', 'Pending', function (x) { return x.status === 'Pending'; }],
+        ['done', 'Decided (45 days)', function (x) { return x.status !== 'Pending'; }], ['mine', 'Sent by me', function (x) { return x.mine; }], ['all', 'All', function () { return true; }]]
+        .filter(function (f) { return d.approver || f[0] !== 'me'; });
+      if (!F.some(function (f) { return f[0] === show; })) show = F[0][0];
+      b.innerHTML = '<div class="fbar"><div class="ff"><label>Filter By</label><select class="inp sm" id="echF">' + F.map(function (f) {
+        return '<option value="' + f[0] + '"' + (f[0] === show ? ' selected' : '') + '>' + h(f[1]) + ' (' + d.list.filter(f[2]).length + ')</option>'; }).join('') + '</select></div>' +
+        '<div class="ff grow"><label>Search</label><input class="inp sm" id="echQ" placeholder="Name, ID, change…"></div></div><div id="echL"></div>';
+      var q = '';
+      function paint() {
+        var fn = F.filter(function (f) { return f[0] === show; })[0][2];
+        var L = d.list.filter(function (x) { return fn(x) && (!q || (x.id + ' ' + x.name + ' ' + x.empId + ' ' + x.by + ' ' + x.summary).toLowerCase().indexOf(q) >= 0); });
+        recList($('#echL', b), L, {
+          title: function (x) { return h(x.name || '—') + ' <span class="tiny muted">' + h(x.empId) + '</span>'; },
+          sub: function (x) { return h([x.id, x.kindText, 'by ' + x.by, x.at].join(' · ')); },
+          right: function (x) { return chip(x.status === 'Pending' ? (x.stage === 'MIS' ? 'Pending with MIS / Director' : 'Pending with HR Executive') : x.status, x.status === 'Approved' ? 'green' : x.status === 'Rejected' ? 'red' : 'orange'); },
+          body: function (x0, x) {
+            x0.innerHTML = echBody(x) + (x.canDecide ? '<div class="row gap6 mt"><input class="inp sm grow" data-rm placeholder="Remarks (needed to reject)">' +
+              '<button class="btn sm red" data-rej>' + icon('close') + 'Reject</button><button class="btn sm green" data-ok>' + icon('check') + 'Approve</button></div>' : '');
+            echBind(x0);
+            function decide(dec, btn) {
+              var rm = val('[data-rm]', x0);
+              if (dec === 'reject' && !rm) return toast('Write why you are rejecting it.', 'bad');
+              busy(btn, true);
+              api('emp.changeDecide', { id: x.id, decision: dec, remarks: rm }).then(function (r) { toast(r.message, 'ok'); delete S.cache.empStats; delete S.cache.empAll; dcDel('emp.changes', {}); changesTab(b); })
+                .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+            }
+            if ($('[data-ok]', x0)) $('[data-ok]', x0).onclick = function (e) { e.stopPropagation(); decide('approve', this); };
+            if ($('[data-rej]', x0)) $('[data-rej]', x0).onclick = function (e) { e.stopPropagation(); decide('reject', this); };
+            if ($('[data-rm]', x0)) $('[data-rm]', x0).onclick = function (e) { e.stopPropagation(); };
+          },
+          empty: 'Nothing here.', emptyIcon: 'task_alt'
+        });
+      }
+      $('#echF', b).onchange = function () { show = S.cache.echShow = this.value; paint(); };
+      $('#echQ', b).oninput = debounce(function () { q = val('#echQ', b).toLowerCase(); paint(); }, 200);
+      paint();
+    }, { alive: function () { return tab === 'changes'; } }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+
+  function joinLink() {
+    stats().then(function (s) {
+      if (!s.joinUrl) return toast('The web app is not deployed yet — deploy it first.', 'bad');
+      modal({ title: 'New employee joining form', body: (s.joinOpen ? '' : '<div class="warn mb">The form is switched off — Settings ▸ Joining Form Enabled = Yes opens it.</div>') +
+        '<p class="small muted" style="margin-top:0">Send this link to the new joiner. Their details and documents land in <b>New joining approvals</b> — no login needed for them.</p>' +
+        '<div class="row"><input class="inp grow" readonly value="' + h(s.joinUrl) + '"><button class="btn sm" data-c>' + icon('content_copy') + 'Copy</button></div>',
+        actions: [{ label: icon('open_in_new') + 'Open', cls: 'ghost', click: function () { window.open(s.joinUrl, '_blank'); } }, { label: 'Done' }],
+        onOpen: function (m) { $('[data-c]', m).onclick = function () { copyText(s.joinUrl); }; } });
+    }).catch(function (e) { toast(e.message, 'bad'); });
+  }
+
+  /* ---------- search & edit ---------- */
+  function empSearchTab(b, q0) {
+    b.innerHTML = '<div class="card"><div class="filters"><input class="inp" id="eq" placeholder="Search anything — name, ID, phone, Aadhar, location…" value="' + h(q0) + '" style="flex:1;min-width:220px">' +
+      '<button class="btn sm" id="ego">' + icon('search') + 'Search</button></div></div><div id="er" class="mt">' + loadingHtml() + '</div>';
+    function run() {
+      $('#er', b).innerHTML = loadingHtml('Searching…');
+      api('emp.search', { q: val('#eq', b) }).then(function (R) {
+        var r = $('#er', b);
+        r.innerHTML = '<div class="small muted mb">' + R.total + ' found' + (R.total > R.results.length ? ' — showing the first ' + R.results.length + ', search to narrow down' : '') + '</div>' +
+          (R.results.length ? tableHtml([
+            { t: 'Employee ID', f: function (x) { return '<b class="nowrap">' + h(x.id) + '</b>'; } },
+            { t: 'Name', f: function (x) { return h(x.name); } },
+            { t: 'Designation', k: 'd', f: function (x) { return h(x.values['Designation']); } },
+            { t: 'Department', f: function (x) { return '<span class="small">' + h(x.values['Department']) + '</span>'; } },
+            { t: 'Location', f: function (x) { return '<span class="small nowrap">' + h(x.values['Location'] || x.values['Current Location']) + '</span>'; } },
+            { t: 'Phone', f: function (x) { return '<span class="nowrap">' + h(x.values['Phone No.']) + '</span>'; } },
+            { t: 'Docs', f: function (x) { var n = EMP_DOCS.filter(function (c) { return empLinks(x.values[c]).length; }).length; return n ? chip(n + ' / 4', n >= 3 ? 'green' : 'orange') : chip('none', 'red'); } }
+          ], R.results, { click: true, max: '64vh' }) : '<div class="card">' + emptyHtml('person_search', 'Nobody matches.') + '</div>');
+        $$('tr[data-row]', r).forEach(function (tr) { tr.onclick = function () { empEdit(R.results[+tr.dataset.row], R, run); }; });
+      }).catch(function (e) { $('#er', b).innerHTML = errHtml(e); });
+    }
+    $('#ego', b).onclick = run;
+
+    $('#eq', b).onkeydown = function (e) { if (e.key === 'Enter') run(); };
+    run();
+  }
+
+  /* ---------- assets ---------- */
+  function assetTab(b) {
+    b.innerHTML = loadingHtml();
+    api('emp.assets').then(function (d) {
+      var cols = ['Employee Id', 'Name', 'Current Location', 'Designation', 'SIM', 'Sim Number', 'Phone', 'Item Code (Phone)', 'PC/Laptop/Tablet', 'Item Code (PC)'].filter(function (c) { return d.head.indexOf(c) >= 0; });
+      b.innerHTML = '<div class="row mb"><input class="inp sm" id="aq" placeholder="Search…" style="width:220px"><span class="grow"></span><button class="btn sm" id="aadd">' + icon('add') + 'Add / update assets</button></div><div id="at"></div>';
+      function paint() {
+        var q = val('#aq', b).toLowerCase(), list = d.rows.filter(function (r) { return !q || JSON.stringify(r.values).toLowerCase().indexOf(q) >= 0; });
+        $('#at', b).innerHTML = list.length ? tableHtml(cols.map(function (c) { return { t: c, f: function (r) { return h(r.values[c]); } }; }), list, { click: true, max: '64vh' }) : '<div class="card">' + emptyHtml('devices', 'No asset record.') + '</div>';
+        $$('tr[data-row]', $('#at', b)).forEach(function (tr) { tr.onclick = function () { recordModal('Assets', d.head, list[+tr.dataset.row].values, 'emp.assetSave', function () { assetTab(b); }); }; });
+      }
+      $('#aq', b).oninput = debounce(paint, 150);
+      $('#aadd', b).onclick = function () { recordModal('Assets', d.head, null, 'emp.assetSave', function () { assetTab(b); }); };
+      paint();
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  /* ---------- PF / salary breakup (payroll only) ---------- */
+  function salaryTab(b) {
+    b.innerHTML = loadingHtml();
+    api('emp.salary').then(function (d) {
+      b.innerHTML = '<div class="row mb"><input class="inp sm" id="sq" placeholder="Search…" style="width:220px"><span class="grow"></span><button class="btn sm" id="sadd">' + icon('add') + 'Add / update</button></div><div id="stb"></div>';
+      function paint() {
+        var q = val('#sq', b).toLowerCase(), list = d.rows.filter(function (r) { return !q || JSON.stringify(r.values).toLowerCase().indexOf(q) >= 0; });
+        $('#stb', b).innerHTML = list.length ? tableHtml(d.head.map(function (c) { return { t: c, cls: /salary|basic|allowance|charges|pf \(|esic|advance|refund/i.test(c) ? 'num' : '', f: function (r) { return h(r.values[c]); } }; }), list, { click: true, max: '64vh' })
+          : '<div class="card">' + emptyHtml('savings', 'Nothing in the salary breakup yet.') + '</div>';
+        $$('tr[data-row]', $('#stb', b)).forEach(function (tr) { tr.onclick = function () { recordModal('PF / salary breakup', d.head, list[+tr.dataset.row].values, 'emp.salarySave', function () { salaryTab(b); }); }; });
+      }
+      $('#sq', b).oninput = debounce(paint, 150);
+      $('#sadd', b).onclick = function () { recordModal('PF / salary breakup', d.head, null, 'emp.salarySave', function () { salaryTab(b); }); };
+      paint();
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  /** Add / edit one row of Assets or Salary Breakup (keyed by Employee Id). */
+  function recordModal(title, head, values, action, done) {
+    var fields = head.filter(function (c) { return c && c !== 'Employee Id'; }), cur = values || {};
+    modal({ title: (values ? 'Edit ' : 'Add ') + title, wide: true, body:
+      '<div class="field"><label>Employee ID *</label><input class="inp" data-id list="empIdList" value="' + h(cur['Employee Id'] || '') + '"' + (values ? ' readonly style="background:#FBF6EE"' : '') + ' placeholder="Type a name or ID"><datalist id="empIdList"></datalist></div>' +
+      '<div class="form-grid">' + fields.map(function (c, i) { return '<div class="field"><label>' + h(c) + '</label><input class="inp sm" data-fi="' + i + '" value="' + h(cur[c] || '') + '"></div>'; }).join('') + '</div>',
+      onOpen: function (m) {
+        if (values) return;
+        cached('empAll', function () { return api('emp.search', { q: '', scope: 'active' }); }).then(function (R) {
+          $('#empIdList', m).innerHTML = R.results.map(function (x) { return '<option value="' + h(x.id) + '">' + h(x.name + ' · ' + (x.values['Designation'] || '')) + '</option>'; }).join('');
+          $('[data-id]', m).onchange = function () {
+            var x = R.results.filter(function (y) { return y.id === val('[data-id]', m); })[0]; if (!x) return;
+            fields.forEach(function (c, i) {
+              var src = c === 'Current Location' ? x.values['Location'] : x.values[c];
+              var inp = $('[data-fi="' + i + '"]', m); if (src && !inp.value && ['Name', 'Location', 'Current Location', 'Designation', 'Department', 'Phone No.', 'Status'].indexOf(c) >= 0) inp.value = src;
+            });
+          };
+        }).catch(function () {});
+      },
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, m, btn) {
+        var f = {}; fields.forEach(function (c, i) { f[c] = val('[data-fi="' + i + '"]', m); });
+        busy(btn, true);
+        api(action, { empId: val('[data-id]', m), fields: f }).then(function (r) { close(); toast(r.message, 'ok'); done(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+  /* ---------- shift timings, person by person (Attendance Manager ▸ Employee Shift) ---------- */
+  function shiftTab(b) {
+    b.innerHTML = loadingHtml();
+    api('emp.shifts').then(function (d) {
+      var MODE = [['auto', 'Auto (nearest shift)'], ['shift', 'Location shift'], ['own', 'Own timing'], ['none', 'No shift checks']];
+      var grp = S.params.sg || '', mq = '', q = '', changed = {};
+      var byId = {}; d.people.forEach(function (x) { x.orig = JSON.stringify([x.mode, x.shift, x.start, x.end, x.notes]); byId[x.employeeId] = x; });
+      b.innerHTML = '<div class="card"><div class="filters">' +
+        '<select class="inp sm" id="sg" style="width:auto"><option value="">All locations</option>' + d.groups.map(function (x) { return '<option value="' + h(x.key) + '"' + (x.key === grp ? ' selected' : '') + '>' + h(x.name) + '</option>'; }).join('') + '</select>' +
+        '<select class="inp sm" id="smd" style="width:auto"><option value="">Every timing</option>' + MODE.map(function (m) { return '<option value="' + m[0] + '">' + h(m[1]) + '</option>'; }).join('') + '</select>' +
+        '<input class="inp sm" id="sq" placeholder="Search name / ID / designation" style="max-width:240px"><span class="grow"></span><span class="small b" id="sN"></span>' +
+        (d.canEdit ? '<button class="btn sm green" id="sSave" disabled>' + icon('save') + 'Save</button>' : chip('View only', 'grey')) + '</div></div>' +
+        '<div class="kpis mt mb" id="sK"></div><div id="sT"></div>';
+      function list() {
+        return d.people.filter(function (x) {
+          return (!grp || x.groupKey === grp) && (!mq || x.mode === mq) && (!q || (x.name + ' ' + x.employeeId + ' ' + x.designation + ' ' + x.department).toLowerCase().indexOf(q) >= 0);
+        });
+      }
+      function shiftOpts(x) {
+        var sh = d.shifts[x.groupKey] || [];
+        return '<option value="">Pick…</option>' + sh.map(function (s0) { return '<option value="' + h(s0.name) + '"' + (s0.name === x.shift ? ' selected' : '') + '>' + h(s0.name + ' · ' + s0.start + ' – ' + s0.end) + '</option>'; }).join('') +
+          (x.shift && !sh.some(function (s0) { return s0.name === x.shift; }) ? '<option selected>' + h(x.shift) + '</option>' : '');
+      }
+      function timing(x) {
+        var dis = d.canEdit ? '' : ' disabled';
+        if (x.mode === 'shift') return '<select class="inp sm" data-sh="' + h(x.employeeId) + '" style="min-width:190px"' + dis + '>' + shiftOpts(x) + '</select>';
+        if (x.mode === 'own') return '<div class="row gap6 nowrap"><span data-st="' + h(x.employeeId) + '">' + tpHtml(x.start, !d.canEdit) + '</span>' +
+          '<span class="small muted">to</span><span data-en="' + h(x.employeeId) + '">' + tpHtml(x.end, !d.canEdit) + '</span></div>';
+        if (x.mode === 'none') return '<span class="small muted">—</span>';
+        var sh = d.shifts[x.groupKey] || [];
+        return '<span class="tiny muted">' + h(sh.map(function (s0) { return s0.name + ' ' + s0.start + '–' + s0.end; }).join(' · ') || 'no shift set for ' + x.group) + '</span>';
+      }
+      function kpis() {
+        var L = d.people.filter(function (x) { return !grp || x.groupKey === grp; }), c = { auto: 0, shift: 0, own: 0, none: 0 };
+        L.forEach(function (x) { c[x.mode] = (c[x.mode] || 0) + 1; });
+        $('#sK', b).innerHTML = kpiBox('Auto', c.auto, 'auto_mode', 'brown', 'nearest location shift', 'auto') + kpiBox('Location shift', c.shift, 'schedule', 'blue', 'pinned to one shift', 'shift') +
+          kpiBox('Own timing', c.own, 'more_time', 'violet', 'their own start – end', 'own') + kpiBox('No shift checks', c.none, 'do_not_disturb_on', 'grey', 'not checked for late / early', 'none');
+        $$('[data-kpi]', $('#sK', b)).forEach(function (k) { k.onclick = function () { mq = mq === k.dataset.kpi ? '' : k.dataset.kpi; $('#smd', b).value = mq; paint(); }; });
+      }
+      function count() {
+        var n = Object.keys(changed).length;
+        $('#sN', b).textContent = n ? n + ' changed' : '';
+        if ($('#sSave', b)) $('#sSave', b).disabled = !n;
+      }
+      function touch(x) {
+        if (JSON.stringify([x.mode, x.shift, x.start, x.end, x.notes]) === x.orig) delete changed[x.employeeId]; else changed[x.employeeId] = 1;
+        count(); kpis();
+      }
+      function paint() {
+        kpis();
+        var L = list(), dis = d.canEdit ? '' : ' disabled';
+        $('#sT', b).innerHTML = L.length ? '<div class="tbl-wrap" style="max-height:62vh;overflow:auto"><table class="tbl grid-edit"><thead><tr><th>Employee</th><th>Section</th><th>Location</th><th>Timing</th><th>Shift / own time</th><th>Notes</th></tr></thead><tbody>' +
+          L.map(function (x) {
+            return '<tr data-r="' + h(x.employeeId) + '"' + (changed[x.employeeId] ? ' style="background:var(--orange2)"' : '') + '><td><b>' + h(x.name) + '</b><div class="tiny muted nowrap">' + h(x.employeeId + ' · ' + x.designation) + '</div></td>' +
+              '<td class="small">' + h(x.department || '—') + '</td><td class="small nowrap">' + h(x.group) + '</td>' +
+              '<td><select class="inp sm" data-md="' + h(x.employeeId) + '" style="min-width:150px"' + dis + '>' + MODE.map(function (m) { return '<option value="' + m[0] + '"' + (m[0] === x.mode ? ' selected' : '') + '>' + h(m[1]) + '</option>'; }).join('') + '</select></td>' +
+              '<td data-tm="' + h(x.employeeId) + '">' + timing(x) + '</td>' +
+              '<td><input class="inp sm" data-nt="' + h(x.employeeId) + '" value="' + h(x.notes) + '" style="min-width:140px"' + dis + '></td></tr>';
+          }).join('') + '</tbody></table></div>' : '<div class="card">' + emptyHtml('schedule', 'Nobody matches.') + '</div>';
+        bindRows($('#sT', b));
+      }
+      function bindRows(box) {
+        $$('[data-md]', box).forEach(function (e) { e.onchange = function () {
+          var x = byId[e.dataset.md]; x.mode = e.value;
+          if (x.mode !== 'shift') x.shift = '';
+          if (x.mode !== 'own') { x.start = ''; x.end = ''; }
+          var td = $('[data-tm="' + x.employeeId + '"]', box); td.innerHTML = timing(x); bindRows(td); touch(x);
+          e.closest('tr').style.background = changed[x.employeeId] ? 'var(--orange2)' : '';
+        }; });
+        $$('[data-sh]', box).forEach(function (e) { e.onchange = function () { var x = byId[e.dataset.sh]; x.shift = e.value; touch(x); e.closest('tr').style.background = changed[x.employeeId] ? 'var(--orange2)' : ''; }; });
+        $$('[data-st]', box).forEach(function (e) { e.onchange = function () { var x = byId[e.dataset.st]; x.start = tpVal(e); touch(x); e.closest('tr').style.background = changed[x.employeeId] ? 'var(--orange2)' : ''; }; });
+        $$('[data-en]', box).forEach(function (e) { e.onchange = function () { var x = byId[e.dataset.en]; x.end = tpVal(e); touch(x); e.closest('tr').style.background = changed[x.employeeId] ? 'var(--orange2)' : ''; }; });
+        $$('[data-nt]', box).forEach(function (e) { e.oninput = function () { var x = byId[e.dataset.nt]; x.notes = e.value; touch(x); e.closest('tr').style.background = changed[x.employeeId] ? 'var(--orange2)' : ''; }; });
+      }
+      $('#sg', b).onchange = function () { grp = this.value; S.params.sg = grp; paint(); };
+      $('#smd', b).onchange = function () { mq = this.value; paint(); };
+      $('#sq', b).oninput = debounce(function () { q = val('#sq', b).toLowerCase(); paint(); }, 150);
+      if ($('#sSave', b)) $('#sSave', b).onclick = function () {
+        var btn = this, rows = Object.keys(changed).map(function (k) { var x = byId[k]; return { employeeId: x.employeeId, mode: x.mode, shift: x.shift, start: x.start, end: x.end, notes: x.notes }; });
+        var bad = rows.filter(function (r) { return (r.mode === 'own' && (!r.start || !r.end)) || (r.mode === 'shift' && !r.shift); });
+        if (bad.length) return toast('Enter the timing for ' + bad.map(function (r) { return byId[r.employeeId].name; }).join(', ') + '.', 'bad');
+        busy(btn, true, 'Saving…');
+        api('emp.shiftSave', { rows: rows }).then(function (r) { toast(r.message, 'ok'); delete S.cache.atBoot; shiftTab(b); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      };
+      paint(); count();
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  show();
+};
+
+function empLocList(b, key) {
+  var R = null, st = { loc: key || '', q: '' }, ALL = /pandri|chanderi|bhanpuri|\bhq\b|gfp/i;
+  b.innerHTML = '<div class="fbar"><div class="ff"><label>Location</label><select class="inp sm" id="peL"><option value="">All locations</option>' +
+    EMP_LOCS.map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === st.loc ? ' selected' : '') + '>' + h(x[1]) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="ff grow"><label>Search</label><input class="inp sm" id="peQ" placeholder="Name, ID, designation, phone…"></div></div><div id="peN" class="small muted mb"></div><div id="peR">' + loadingHtml() + '</div>';
+  function loc(x) { return x.values['Location'] || x.values['Current Location'] || ''; }
+  function load() { api('emp.search', { q: '' }).then(function (d) { R = d; counts(); paint(); }).catch(function (e) { $('#peR', b).innerHTML = errHtml(e); }); }
+  function counts() {
+    var all = R.results.filter(function (x) { return ALL.test(loc(x)); });
+    $('#peL', b).innerHTML = '<option value="">All locations (' + all.length + ')</option>' + EMP_LOCS.map(function (x) {
+      var n = all.filter(function (y) { return x[3].test(loc(y)); }).length;
+      return '<option value="' + x[0] + '"' + (x[0] === st.loc ? ' selected' : '') + '>' + h(x[1]) + ' (' + n + ')</option>';
+    }).join('');
+  }
+  function paint() {
+    var L0 = empLocOf(st.loc), L = R.results.filter(function (x) {
+      var l = loc(x);
+      if (!ALL.test(l)) return false;
+      if (L0 && !L0[3].test(l)) return false;
+      return !st.q || (x.id + ' ' + x.name + ' ' + JSON.stringify(x.values)).toLowerCase().indexOf(st.q) >= 0;
+    });
+    $('#peN', b).textContent = L.length + ' employee' + (L.length === 1 ? '' : 's') + (perm('empNeedsOk') ? ' · your edits go for approval' : '');
+    recList($('#peR', b), L, {
+      title: function (x) { return h(x.name) + ' <span class="tiny muted">' + h(x.id) + '</span>'; },
+      sub: function (x) { return h([x.values['Designation'], x.values['Department'], loc(x)].filter(Boolean).join(' · ')); },
+      right: function (x) { return '<span class="small nowrap hide-m">' + h(x.values['Phone No.'] || '') + '</span>'; },
+      empty: 'Nobody matches.', emptyIcon: 'person_search',
+      body: function (e, x) {
+        var keys = ['Phone No.', 'Date Of Joining', 'Date of Birth', 'Gender', "Father/Husband's Name", 'Highest Qualification', 'Bank Name', 'AC Num', 'IFSC', 'Aadhar Card', 'Pan', 'PF Applicable', 'Current Address'];
+        e.innerHTML = kvHtml(keys.filter(function (k) { return x.values[k] !== undefined; }).map(function (k) { return [k, x.values[k]]; })) +
+          '<div class="row"><span class="grow"></span><button class="btn sm soft" data-ed>' + icon('edit') + 'Edit</button></div>';
+        $('[data-ed]', e).onclick = function () { empEdit(x, R, function () { delete S.cache.empStats; load(); }); };
+      }
+    });
+  }
+  $('#peL', b).onchange = function () { st.loc = this.value; S.params.loc = st.loc; if (R) paint(); };
+  $('#peQ', b).oninput = debounce(function () { st.q = val('#peQ', b).toLowerCase(); if (R) paint(); }, 200);
+  load();
+}
+
+/** The full record of one employee: every column, documents, status move. */
+function empEdit(rec, R, after) {
+  var H = (R.heads[rec.sheet] || Object.keys(rec.values)).filter(String), v = rec.values, meta = R.meta;
+  var exp = { id: rec.id, name: rec.name };
+  var editable = H.filter(function (c) { return EMP_READONLY.indexOf(c) < 0 && EMP_DOCS.indexOf(c) < 0 && (perm('payroll') || !EMP_SALARY_RE.test(c)); });
+  var used = {}, groups = EMP_GROUPS.map(function (g) {
+    var f = g[2].filter(function (c) { return editable.indexOf(c) >= 0; }); f.forEach(function (c) { used[c] = 1; }); return [g[0], g[1], f];
+  });
+  var sal = editable.filter(function (c) { return !used[c] && EMP_SALARY_RE.test(c); }); sal.forEach(function (c) { used[c] = 1; });
+  var other = editable.filter(function (c) { return !used[c]; });
+  if (sal.length) groups.push(['Salary', 'payments', sal]);
+  if (other.length) groups.push(['Other', 'more_horiz', other]);
+  function input(c) {
+    var cur = v[c] || '', id = 'ef' + editable.indexOf(c);
+    function opts(list) { if (cur && list.indexOf(cur) < 0) list = [cur].concat(list); return list.map(function (o) { return '<option' + (o === cur ? ' selected' : '') + '>' + h(o) + '</option>'; }).join(''); }
+    if (c === 'Location') return '<select class="inp sm" id="' + id + '"><option value=""></option>' + opts(meta.locations.slice()) + '</select>';
+    if (c === 'Gender') return '<select class="inp sm" id="' + id + '"><option value=""></option>' + opts(['Male', 'Female', 'Other']) + '</select>';
+    if (c === 'PF Applicable' || c === 'IT Equipment') return '<select class="inp sm" id="' + id + '"><option value=""></option>' + opts(c === 'IT Equipment' ? ['Yes', 'No', 'N/A'] : ['Yes', 'No']) + '</select>';
+    if (/(permanent|current) address/i.test(c)) return '<textarea class="inp sm" id="' + id + '" rows="2">' + h(cur) + '</textarea>';
+    var list = c === 'Designation' ? ' list="dlDesig"' : c === 'Department' ? ' list="dlDept"' : c === 'Blood Group' ? ' list="dlBlood"' : '';
+    return '<input class="inp sm" id="' + id + '" value="' + h(cur) + '"' + list + (/date|birth|joining/i.test(c) ? ' placeholder="dd/mm/yyyy"' : '') + '>';
+  }
+  var docs = EMP_DOCS.filter(function (c) { return H.indexOf(c) >= 0; });
+  modal({ title: rec.name + ' · ' + rec.id, full: true, body:
+    '<div class="row mb">' + chip('Active', 'green') + chip(rec.sheet, 'grey') + '</div>' +
+    '<datalist id="dlDesig">' + meta.designations.map(function (d) { return '<option value="' + h(d.name) + '">'; }).join('') + '</datalist>' +
+    '<datalist id="dlDept">' + meta.departments.map(function (d) { return '<option value="' + h(d) + '">'; }).join('') + '</datalist>' +
+    '<datalist id="dlBlood">' + ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(function (d) { return '<option value="' + d + '">'; }).join('') + '</datalist>' +
+    '<div class="grid g2">' + groups.filter(function (g) { return g[2].length; }).map(function (g) {
+      return '<div class="card"><h3>' + icon(g[1]) + ' ' + h(g[0]) + '</h3><div class="form-grid">' + g[2].map(function (c) {
+        return '<div class="field' + (/(permanent|current) address/i.test(c) ? ' full' : '') + '"><label>' + h(c) + '</label>' + input(c) + '</div>'; }).join('') + '</div></div>';
+    }).join('') +
+    (docs.length ? '<div class="card"><h3>' + icon('folder') + ' Documents</h3><div class="stack" data-docs></div></div>' : '') + '</div>',
+    onOpen: function (m) {
+      function docRows() {
+        $('[data-docs]', m).innerHTML = docs.map(function (c) {
+          var links = empLinks(v[c]);
+          return '<div class="row"><span class="grow b small">' + icon('description') + ' ' + h(EMP_DOC_NAME[c]) + '</span>' +
+            links.map(function (u, k) { return '<button class="btn sm soft" data-view="' + h(c) + '|' + k + '">' + icon('visibility') + (links.length > 1 ? k + 1 : 'View') + '</button>'; }).join('') +
+            '<button class="btn sm ghost" data-up="' + h(c) + '">' + icon('upload') + (links.length && c.indexOf('Additional') !== 0 ? 'Replace' : 'Upload') + '</button></div>';
+        }).join('');
+        $$('[data-view]', m).forEach(function (x) { x.onclick = function () { var k = x.dataset.view.split('|'); openFileApi('emp.docView', { sheet: rec.sheet, row: rec.row, expected: exp, column: k[0], i: +k[1] }, EMP_DOC_NAME[k[0]] + ' · ' + rec.name); }; });
+        $$('[data-up]', m).forEach(function (x) {
+          x.onclick = function () {
+            var col = x.dataset.up;
+            pickFile('image/*,application/pdf', function (file) {
+              busy(x, true, 'Uploading…');
+              api('emp.docUpload', { sheet: rec.sheet, row: rec.row, expected: exp, column: col, file: file }).then(function (r) { if (!r.pending) v[col] = r.value; toast(r.message, 'ok'); docRows(); })
+                .catch(function (e) { busy(x, false); toast(e.message, 'bad'); });
+            });
+          };
+        });
+      }
+      if (docs.length) docRows();
+    },
+    actions: [{ label: 'Close', cls: 'ghost' }, { label: icon('save') + 'Save changes', cls: 'green', click: function (close, m, btn) {
+      var ups = {}, n = 0;
+      editable.forEach(function (c, i) { var e = $('#ef' + i, m); if (!e) return; var nv = e.value.trim(); if (nv !== String(v[c] || '').trim()) { ups[c] = nv; n++; } });
+      if (!n) return toast('Nothing changed.');
+      busy(btn, true);
+      api('emp.save', { sheet: rec.sheet, row: rec.row, expected: exp, updates: ups }).then(function (r) { close(); toast(r.message, 'ok'); delete S.cache.empAll; if (after) after(); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    } }] });
+}
+
+/* =====================================================================
+   ATTENDANCE MANAGER
+   ===================================================================== */
+V.hr_attendance = function (el, p) {
+  var AB = null, view = p.view || '', HB = null;
+  el.innerHTML = pageHead(p.back === 'payroll' ? 'Payroll' : 'Attendance', '', '<button class="btn sm ghost" id="atr">' + icon('sync') + 'Refresh</button>') + '<div id="hb"></div>';
+  var root = $('#hb', el), nav = S.nav;
+  $('#atr', el).onclick = function () {
+    var b = this; busy(b, true, 'Refreshing…');
+    api('at.refresh').then(function (r) { busy(b, false); toast(r.message, 'ok'); delete S.cache.atBoot; delete S.cache.atEmps; delete S.cache.penMeta; dcDel('at.hub', {}); show(); })
+      .catch(function (e) { busy(b, false); toast(e.message, 'bad'); });
+  };
+  function boot() { return cached('atBoot', function () { return api('at.boot'); }).then(function (d) { AB = d; return d; }); }
+  function back() { if (p.back) return go(p.back, {}); view = ''; delete S.params.view; show(); }
+  function show() {
+    if (view) return open(view);
+    root.innerHTML = '<div id="atQ"></div><div id="atC"></div>';
+    function paint(d) {
+      if (!document.body.contains(root) || view) return;
+      atQuickBtns($('#atQ', root), d, open);
+      hubCards($('#atC', root), atCards(d), open);
+    }
+    paint(HB);
+    live('at.hub', {}, function (d) { HB = d; paint(d); }, { alive: function () { return S.nav === nav && !view; } }).catch(function (e) { $('#atC', root).innerHTML = errHtml(e); });
+  }
+  function open(v) {
+    if (v === 'unapproved' || v === 'exceptions' || v === 'give') { S.params.ptab = v; v = 'penalty'; }
+    if (v === 'lastpen') { S.params.dstatus = 'penalty'; v = 'last'; }
+    view = v; S.params.view = v;
+    var T = { upload: ['Upload attendance', 'upload_file'], penalty: ['Penalties', 'money_off'], last: ['Attendance records', 'table_rows'],
+      data: ['Attendance records', 'table_rows'], ot: ['Overtime', 'more_time'], rules: ['Rules', 'tune'] }[v] || ['Attendance', 'fingerprint'];
+    var b = hubPanel(root, T[0], T[1], back);
+    b.innerHTML = loadingHtml();
+    boot().then(function () {
+      if (v === 'upload') uploadTab(b);
+      else if (v === 'data') dataTab(b);
+      else if (v === 'last') { S.params.from = S.params.to = latest(); dataTab(b); }
+      else if (v === 'penalty') penaltiesTab(b);
+      else if (v === 'ot') otPanel(b);
+      else if (v === 'rules') rulesTab(b);
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  function penaltiesTab(b) {
+    var sub = S.params.ptab || 'types';
+    b.innerHTML = tabsHtml([['types', 'By type'], ['unapproved', 'Unapproved leave'], ['exceptions', 'Exceptions'], ['give', 'Give a penalty']], sub) + '<div id="ptb"></div>';
+    bindTabs(b, function (t) { sub = t; S.params.ptab = t; load(); });
+    function load() {
+      var x = $('#ptb', b);
+      if (sub === 'unapproved') return ulPanel(x, {});
+      if (sub === 'exceptions') return excPanel(x);
+      if (sub === 'give') { x.innerHTML = loadingHtml(); return loadBundle('ViewsPeople').then(function () { penaltyPanel(x, {}, true); }).catch(function (e) { x.innerHTML = errHtml(e); }); }
+      penList(x, { from: HB ? HB.monthStart : latest().slice(0, 8) + '01', to: todayISO() });
+    }
+    load();
+  }
+  function jump(t) { view = ''; open(t === 'upload' ? 'upload' : 'data'); }
+  function groupSel(id, cur, all) {
+    return '<select class="inp sm" id="' + id + '" style="width:auto">' + (all !== false ? '<option value="">All locations</option>' : '') + AB.groups.map(function (g) {
+      return '<option value="' + h(g.groupKey) + '"' + (g.groupKey === cur ? ' selected' : '') + '>' + h(g.groupName) + '</option>'; }).join('') + '</select>';
+  }
+  function latest() { return AB && AB.dates[0] ? AB.dates[0].key : addDaysISO(todayISO(), -1); }
+
+  var PEN_PICK = [['', 'All'], ['LATE_IN', 'Late punch in'], ['UNAPPROVED_LEAVE', 'Unapproved leave'], ['M:notinuniform', 'Not in uniform'], ['M:notfullygroomed', 'Not fully groomed'], ['M:misbehaviour', 'Misbehaviour']];
+  function penList(b, st) {
+    st.type = st.type || ''; st.group = st.group || ''; st.q = '';
+    b.innerHTML = '<div class="fbar"><div class="ff"><label>From</label><input type="date" class="inp sm" id="plF" value="' + h(st.from) + '"></div>' +
+      '<div class="ff"><label>To</label><input type="date" class="inp sm" id="plT" value="' + h(st.to) + '"></div><div class="ff"><label>Location</label>' + groupSel('plG', st.group) + '</div>' +
+      '<div class="ff grow"><label>Search</label><input class="inp sm" id="plQ" placeholder="Name, ID…"></div></div><div id="plTy" class="row gap6 mb" style="flex-wrap:wrap"></div><div id="plK"></div><div id="plL">' + loadingHtml() + '</div><div id="plB"></div>';
+    var D = null, picked = [];
+    function load() {
+      $('#plL', b).innerHTML = loadingHtml();
+      api('pen.list', { from: st.from, to: st.to, group: st.group }).then(function (d) { D = d; paint(); }).catch(function (e) { $('#plL', b).innerHTML = errHtml(e); });
+    }
+    function norm0(k) { return String(k).toLowerCase().replace(/[^a-z:_]/g, ''); }
+    function paint() {
+      var types = PEN_PICK.slice(), have = {};
+      types.forEach(function (t) { have[norm0(t[0])] = 1; });
+      D.types.forEach(function (t) { if (!have[norm0(t.key)]) { types.push([t.key, t.label]); have[norm0(t.key)] = 1; } });
+      var amtOf = {}; D.types.forEach(function (t) { amtOf[norm0(t.key)] = t; });
+      $('#plTy', b).innerHTML = types.map(function (t) {
+        var x = t[0] ? amtOf[norm0(t[0])] : { count: D.rows.length, amount: D.total };
+        return '<button class="fchip' + (norm0(t[0]) === norm0(st.type) ? ' on' : '') + '" data-ty="' + h(t[0]) + '">' + h(t[1]) + '<span class="n">' + (x ? x.count : 0) + '</span></button>';
+      }).join('');
+      $$('[data-ty]', b).forEach(function (x) { x.onclick = function () { st.type = x.dataset.ty; paint(); }; });
+      var L = D.rows.filter(function (r) { return (!st.type || norm0(r.cat) === norm0(st.type)) && (!st.q || (r.name + ' ' + r.employeeId + ' ' + r.label).toLowerCase().indexOf(st.q) >= 0); });
+      var sum = L.reduce(function (t, r) { return t + r.amount; }, 0), ppl = {}, nw = 0;
+      L.forEach(function (r) { if (r.amount > 0) ppl[r.employeeId] = 1; if (r.waived) nw++; });
+      hubCards($('#plK', b), [{ key: 'a', static: true, icon: 'money_off', label: 'Penalty', value: money(sum), sub: (L.length - nw) + ' penalties' },
+        { key: 'b', static: true, icon: 'groups', label: 'People', value: Object.keys(ppl).length, sub: atDateText(st.from) + (st.to !== st.from ? ' – ' + atDateText(st.to) : '') },
+        { key: 'c', static: true, icon: 'block', label: 'Waived', value: nw, sub: 'waived or exception' }]);
+      picked = []; $('#plB', b).innerHTML = '';
+      recList($('#plL', b), L, {
+        check: function (r) { return D.canEdit && !r.exempt && (r.auto || r.canEdit); },
+        onCheck: function (sel) { picked = sel; bulk(); },
+        title: function (r) { return h(r.name) + ' <span class="tiny muted">' + h(r.employeeId) + '</span>'; },
+        sub: function (r) { return h(r.date + ' · ' + r.label + (r.group ? ' · ' + r.group : '')) + (r.basis ? '<br>' + h(money(r.wage) + ' at 2× daily wage · ' + money(r.fixed) + ' fixed') : ''); },
+        right: function (r) { return (r.exempt ? chip('exception', 'green') : r.waived ? chip('waived', 'amber') : r.edited ? chip('changed', 'blue') : '') + (r.auto ? '' : chip('by hand', 'grey')) + '<b style="color:' + (r.amount > 0 ? 'var(--red)' : 'var(--muted)') + '">' + money(r.amount) + '</b>'; },
+        empty: 'No penalty in these dates.', emptyIcon: 'sentiment_satisfied',
+        body: function (x, r) {
+          x.innerHTML = kvHtml([['Employee', r.name + ' · ' + r.employeeId + (r.designation ? ' · ' + r.designation : '')], ['Date', r.date], ['Penalty', r.label],
+            r.auto ? ['Punches', (r.punchIn || '—') + ' – ' + (r.punchOut || '—') + (r.shift ? ' · ' + r.shift : '') + ' · ' + (r.status || '')] : null,
+            r.original !== null && r.original !== undefined ? ['Automatic amount', money(r.original)] : null, r.notes ? [r.exempt ? 'Exception' : 'Remark', r.notes] : null,
+            r.by ? [r.exempt ? 'Exception by' : r.auto ? 'Changed by' : 'Given by', r.by] : null]) +
+            (D.canEdit && !r.exempt && (r.auto || r.canEdit) ? '<div class="form-grid"><div class="field"><label>Amount (₹)</label><input class="inp sm" inputmode="numeric" data-a value="' + h(r.amount) + '"></div>' +
+              '<div class="field"><label>Remark</label><input class="inp sm" data-n value="' + h(r.notes) + '"></div></div><div class="row gap6"><span class="grow"></span>' +
+              (r.auto && r.edited ? '<button class="btn sm ghost" data-rs>' + icon('restart_alt') + 'Automatic amount</button>' : '') +
+              (!r.auto && r.canEdit ? '<button class="btn sm ghost" data-rm>' + icon('delete') + 'Remove</button>' : '') +
+              '<button class="btn sm amber" data-w>' + icon('block') + 'Waive</button><button class="btn sm green" data-s>' + icon('save') + 'Save</button></div>' : '');
+          function send(extra, bt) {
+            var d0 = r.auto ? { auto: true, date: r.dateKey, employeeId: r.employeeId, ruleId: r.ruleId } : { entryId: r.entryId };
+            busy(bt, true);
+            api('pen.edit', Object.assign(d0, { amount: val('[data-a]', x), notes: val('[data-n]', x) }, extra)).then(function (res) { toast(res.message, 'ok'); dcDel('at.hub', {}); load(); })
+              .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+          }
+          if ($('[data-s]', x)) $('[data-s]', x).onclick = function () { send({}, this); };
+          if ($('[data-w]', x)) $('[data-w]', x).onclick = function () { $('[data-a]', x).value = 0; send({ amount: 0 }, this); };
+          if ($('[data-rs]', x)) $('[data-rs]', x).onclick = function () { send({ restore: true }, this); };
+          if ($('[data-rm]', x)) $('[data-rm]', x).onclick = function () { var bt = this; busy(bt, true); api('pen.remove', { entryId: r.entryId }).then(function (res) { toast(res.message, 'ok'); load(); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); }); };
+        }
+      });
+    }
+    function bulk() {
+      var bx = $('#plB', b);
+      if (!picked.length) { bx.innerHTML = ''; return; }
+      var tot = picked.reduce(function (t, r) { return t + r.amount; }, 0), anyEd = picked.some(function (r) { return r.auto && r.edited; });
+      bx.innerHTML = '<div class="bulkbar" style="flex-wrap:wrap"><span class="grow">' + picked.length + ' ticked · ' + money(tot) + '</span>' +
+        '<input class="inp sm" data-ba inputmode="numeric" placeholder="Amount ₹" style="width:110px">' +
+        '<input class="inp sm" data-bn placeholder="Remark" style="width:170px">' +
+        '<button class="btn sm" data-bs>' + icon('save') + 'Set amount</button><button class="btn sm amber" data-bw>' + icon('block') + 'Waive</button>' +
+        (anyEd ? '<button class="btn sm ghost" data-br style="color:#fff">' + icon('restart_alt') + 'Automatic amount</button>' : '') + '</div>';
+      function items() { return picked.map(function (r) { return r.auto ? { auto: true, date: r.dateKey, employeeId: r.employeeId, ruleId: r.ruleId } : { entryId: r.entryId }; }); }
+      function go0(extra, bt) {
+        busy(bt, true);
+        api('pen.editMany', Object.assign({ items: items(), notes: val('[data-bn]', bx) }, extra)).then(function (res) { toast(res.message, 'ok'); dcDel('at.hub', {}); load(); })
+          .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+      }
+      $('[data-bw]', bx).onclick = function () { var bt = this; confirmBox('Waive ' + picked.length + ' penalties?', money(tot) + ' will not be charged.', 'Waive').then(function (ok) { if (ok) go0({ amount: 0 }, bt); }); };
+      $('[data-bs]', bx).onclick = function () { var a0 = val('[data-ba]', bx); if (a0 === '') return toast('Enter the amount.', 'bad'); go0({ amount: a0 }, this); };
+      if ($('[data-br]', bx)) $('[data-br]', bx).onclick = function () { go0({ restore: true }, this); };
+    }
+    $('#plF', b).onchange = function () { st.from = this.value || st.from; load(); };
+    $('#plT', b).onchange = function () { st.to = this.value || st.to; load(); };
+    $('#plG', b).onchange = function () { st.group = this.value; load(); };
+    $('#plQ', b).oninput = debounce(function () { st.q = val('#plQ', b).toLowerCase(); if (D) paint(); }, 200);
+    load();
+  }
+
+  function ulPanel(b, st) {
+    var now = new Date(), months = [];
+    for (var i = 0; i < 6; i++) { var d0 = new Date(now.getFullYear(), now.getMonth() - i, 1); months.push([d0.getFullYear() + '-' + pad2(d0.getMonth() + 1), monthLabelOf(d0)]); }
+    st.month = st.month || months[0][0];
+    b.innerHTML = '<div class="fbar"><div class="ff"><label>Month</label><select class="inp sm" id="ulM">' + months.map(function (m) { return '<option value="' + m[0] + '"' + (m[0] === st.month ? ' selected' : '') + '>' + h(m[1]) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="ff grow"><label>Search</label><input class="inp sm" id="ulQ" placeholder="Name, ID…"></div></div><div id="ulK"></div><div id="ulL">' + loadingHtml() + '</div><div id="ulB"></div>';
+    var D = null, q = '', ticked = {};
+    function load() {
+      $('#ulL', b).innerHTML = loadingHtml(); ticked = {};
+      api('pen.ul', { month: st.month }).then(function (d) { D = d; paint(); }).catch(function (e) { $('#ulL', b).innerHTML = errHtml(e); });
+    }
+    function basisText(x) { return x === 'FIXED' ? 'Fixed amount' : x === 'WAIVE' ? 'Waived' : D.wageTimes + '× daily wage'; }
+    function paint() {
+      var T = D.totals;
+      hubCards($('#ulK', b), [
+        { key: 'w', static: true, icon: 'payments', label: D.wageTimes + '× daily wage', value: money(T.wage), sub: T.people + ' people' },
+        { key: 'f', static: true, icon: 'money_off', label: 'Fixed amount', value: money(T.fixed), sub: T.people + ' people' },
+        { key: 'a', static: true, icon: 'task_alt', label: 'Charged', value: money(T.applied), sub: h(D.monthText) }]);
+      var L = D.people.filter(function (x) { return !q || (x.name + ' ' + x.employeeId).toLowerCase().indexOf(q) >= 0; });
+      $('#ulL', b).innerHTML = L.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr>' + (D.canChoose ? '<th><input type="checkbox" id="ulAll"></th>' : '') +
+        '<th>Employee</th><th class="num">Days</th><th class="num">' + D.wageTimes + '× daily wage</th><th class="num">Fixed amount</th><th>Charged at</th><th class="num">Charged</th></tr></thead><tbody>' +
+        L.map(function (x) {
+          return '<tr>' + (D.canChoose ? '<td><input type="checkbox" data-ck="' + h(x.employeeId) + '"' + (ticked[x.employeeId] ? ' checked' : '') + '></td>' : '') +
+            '<td><b>' + h(x.name) + '</b><div class="tiny muted" title="' + h(x.dates.join(', ')) + '">' + h([x.employeeId, x.group].filter(Boolean).join(' · ')) + '<br>' + h(x.dates.slice(0, 5).join(', ') + (x.dates.length > 5 ? ' +' + (x.dates.length - 5) + ' more' : '')) + '</div></td>' +
+            '<td class="num">' + x.days + '</td><td class="num">' + money(x.wage) + '<div class="tiny muted">' + (x.daily > 0 ? 'daily ' + money(x.daily) : 'No salary found') + '</div></td><td class="num">' + money(x.fixed) + '</td>' +
+            '<td>' + (D.canChoose ? '<select class="inp sm" data-bs="' + h(x.employeeId) + '" style="width:auto"><option value="WAGE"' + (x.basis !== 'FIXED' && x.basis !== 'WAIVE' ? ' selected' : '') + '>' + D.wageTimes + '× daily wage</option><option value="FIXED"' + (x.basis === 'FIXED' ? ' selected' : '') + '>Fixed amount</option><option value="WAIVE"' + (x.basis === 'WAIVE' ? ' selected' : '') + '>Waived</option></select>' : h(basisText(x.basis))) +
+            (x.edited ? '<div class="tiny muted">' + x.edited + ' day(s) changed by hand</div>' : '') + '</td><td class="num"><b style="color:var(--red)">' + money(x.applied) + '</b></td></tr>';
+        }).join('') + '</tbody></table></div>' : '<div class="card">' + emptyHtml('sentiment_satisfied', 'No unapproved leave in ' + D.monthText + '.') + '</div>';
+      $$('[data-bs]', b).forEach(function (sel) { sel.onchange = function () { send([sel.dataset.bs], sel.value, sel); }; });
+      $$('[data-ck]', b).forEach(function (c) { c.onchange = function () { if (c.checked) ticked[c.dataset.ck] = 1; else delete ticked[c.dataset.ck]; bar(); }; });
+      if ($('#ulAll', b)) $('#ulAll', b).onchange = function () { var on = this.checked; L.forEach(function (x) { if (on) ticked[x.employeeId] = 1; else delete ticked[x.employeeId]; }); $$('[data-ck]', b).forEach(function (c) { c.checked = on; }); bar(); };
+      bar();
+    }
+    function bar() {
+      var ids = Object.keys(ticked);
+      $('#ulB', b).innerHTML = ids.length ? '<div class="bulkbar"><span class="grow">' + ids.length + ' ticked · charge at</span><button class="btn sm" data-bk="WAGE">' + D.wageTimes + '× daily wage</button><button class="btn sm amber" data-bk="FIXED">Fixed amount</button><button class="btn sm ghost" data-bk="WAIVE" style="color:#fff">Waive</button></div>' : '';
+      $$('[data-bk]', b).forEach(function (bt) { bt.onclick = function () { send(ids, bt.dataset.bk, bt); }; });
+    }
+    function send(ids, basis, el0) {
+      busy(el0, true);
+      api('pen.ulSave', { month: st.month, ids: ids, basis: basis }).then(function (r) { toast(r.message, 'ok'); dcDel('at.hub', {}); load(); })
+        .catch(function (e) { busy(el0, false); toast(e.message, 'bad'); load(); });
+    }
+    $('#ulM', b).onchange = function () { st.month = this.value; load(); };
+    $('#ulQ', b).oninput = debounce(function () { q = val('#ulQ', b).toLowerCase(); if (D) paint(); }, 200);
+    load();
+  }
+
+  function excPanel(b) {
+    b.innerHTML = loadingHtml();
+    api('pen.exc').then(function (D) {
+      var groups = {}, cur = '', show = 'now', q = '';
+      D.people.forEach(function (p0) { (groups[p0.group] = groups[p0.group] || []).push(p0); });
+      var typeOpts = D.types.map(function (t) { return '<option value="' + h(t.key) + '">' + h(t.label) + '</option>'; }).join('');
+      b.innerHTML = (D.canEdit ? '<div class="card"><h3>' + icon('verified_user') + ' <span data-xh>Add an exception</span></h3><div class="form-grid">' +
+        '<div class="field"><label>Employee</label><select class="inp" data-xe><option value="">Pick an employee</option>' + Object.keys(groups).sort().map(function (g) {
+          return '<optgroup label="' + h(g) + '">' + groups[g].map(function (p0) { return '<option value="' + h(p0.employeeId) + '">' + h(p0.name + ' · ' + p0.employeeId + (p0.designation ? ' · ' + p0.designation : '')) + '</option>'; }).join('') + '</optgroup>';
+        }).join('') + '</select></div>' +
+        '<div class="field"><label>Penalty</label><select class="inp" data-xt>' + typeOpts + '</select></div>' +
+        '<div class="field"><label>From (optional)</label><input type="date" class="inp" data-xf></div>' +
+        '<div class="field"><label>To (optional)</label><input type="date" class="inp" data-xto></div>' +
+        '<div class="field full"><label>Reason</label><input class="inp" data-xr></div></div>' +
+        '<div class="row gap6"><span class="grow"></span><button class="btn sm ghost hide" data-xc>Cancel</button><button class="btn green" data-xs>' + icon('save') + 'Save exception</button></div></div>' : '') +
+        '<div class="fbar"><div class="ff"><label>Show</label><select class="inp sm" data-xw></select></div><div class="ff grow"><label>Search</label><input class="inp sm" data-xq placeholder="Name, ID…"></div></div><div data-xl></div>';
+      function form(x) {
+        cur = x ? x.id : '';
+        $('[data-xh]', b).textContent = x ? 'Change ' + x.id : 'Add an exception';
+        $('[data-xe]', b).value = x ? x.employeeId : ''; $('[data-xt]', b).value = x ? x.type : 'ALL';
+        $('[data-xf]', b).value = x ? x.from : ''; $('[data-xto]', b).value = x ? x.to : ''; $('[data-xr]', b).value = x ? x.reason : '';
+        $('[data-xc]', b).classList.toggle('hide', !x);
+        if (x) b.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      function paint() {
+        var now = D.rows.filter(function (x) { return x.state === 'In force' || x.state === 'Starts later'; });
+        $('[data-xw]', b).innerHTML = '<option value="now"' + (show === 'now' ? ' selected' : '') + '>In force (' + now.length + ')</option><option value="all"' + (show === 'all' ? ' selected' : '') + '>All (' + D.rows.length + ')</option>';
+        var L = (show === 'now' ? now : D.rows).filter(function (x) { return !q || (x.name + ' ' + x.employeeId + ' ' + x.reason).toLowerCase().indexOf(q) >= 0; });
+        recList($('[data-xl]', b), L, {
+          title: function (x) { return h(x.name) + ' <span class="tiny muted">' + h(x.employeeId) + '</span>'; },
+          sub: function (x) { return h(x.typeLabel + ' · ' + (x.fromText || 'every date') + (x.toText ? ' – ' + x.toText : x.fromText ? ' onwards' : '') + (x.group ? ' · ' + x.group : '')); },
+          right: function (x) { return chip(x.state, x.state === 'In force' ? 'green' : x.state === 'Starts later' ? 'blue' : 'grey'); },
+          empty: 'No penalty exception.', emptyIcon: 'verified_user',
+          body: function (el0, x) {
+            el0.innerHTML = kvHtml([['Employee', x.name + ' · ' + x.employeeId + (x.designation ? ' · ' + x.designation : '')], ['Penalty', x.typeLabel],
+              ['From', x.fromText || 'every date'], ['To', x.toText || 'no end date'], ['Reason', x.reason], ['Added by', x.by + (x.at ? ' · ' + x.at : '')], ['ID', x.id]]) +
+              (D.canEdit && x.active ? '<div class="row gap6 mt"><span class="grow"></span><button class="btn sm ghost" data-xd>' + icon('delete') + 'Remove</button><button class="btn sm" data-xu>' + icon('edit') + 'Change</button></div>' : '');
+            if ($('[data-xu]', el0)) $('[data-xu]', el0).onclick = function () { form(x); };
+            if ($('[data-xd]', el0)) $('[data-xd]', el0).onclick = function () {
+              var bt = this;
+              confirmBox('Remove the exception for ' + x.name + '?', 'Their ' + x.typeLabel.toLowerCase() + ' penalties are charged again.', 'Remove', true).then(function (ok) {
+                if (!ok) return; busy(bt, true);
+                api('pen.excRemove', { id: x.id }).then(function (r) { toast(r.message, 'ok'); dcDel('at.hub', {}); excPanel(b); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+              });
+            };
+          }
+        });
+      }
+      $('[data-xw]', b).onchange = function () { show = this.value; paint(); };
+      $('[data-xq]', b).oninput = debounce(function () { q = val('[data-xq]', b).toLowerCase(); paint(); }, 200);
+      if (D.canEdit) {
+        $('[data-xc]', b).onclick = function () { form(null); };
+        $('[data-xs]', b).onclick = function () {
+          var bt = this, d0 = { id: cur, employeeId: $('[data-xe]', b).value, type: $('[data-xt]', b).value, from: $('[data-xf]', b).value, to: $('[data-xto]', b).value, reason: val('[data-xr]', b) };
+          if (!d0.employeeId) return toast('Pick the employee.', 'bad');
+          if (!d0.reason) return toast('Write the reason.', 'bad');
+          busy(bt, true);
+          api('pen.excSave', d0).then(function (r) { toast(r.message, 'ok'); dcDel('at.hub', {}); excPanel(b); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+        };
+      }
+      paint();
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+
+  function otPanel(b) {
+    live('hrd.att', { date: '' }, function (A) {
+      if (A.empty) { b.innerHTML = '<div class="card">' + emptyHtml('cloud_upload', 'No attendance uploaded yet.') + '</div>'; return; }
+      var M = A.otMonth || { people: [] }, day = A.otDay || [];
+      b.innerHTML = '<div id="otK"></div><div class="section-title">' + h(A.monthText) + '</div><div id="otL"></div>';
+      hubCards($('#otK', b), [{ key: 'm', static: true, icon: 'more_time', label: 'Overtime this month', value: money(M.amount || 0), sub: num(M.hours || 0) + ' h · ' + M.people.length + ' people' },
+        { key: 'd', static: true, icon: 'today', label: A.dateText, value: money(day.reduce(function (t, x) { return t + x.amount; }, 0)), sub: day.length + ' people' }]);
+      recList($('#otL', b), M.people, {
+        title: function (x) { return h(x.name); }, sub: function (x) { return h(x.place + ' · ' + x.days + ' day(s)'); },
+        right: function (x) { return '<span class="small nowrap">' + x.hours + ' h</span><b style="color:var(--violet)">' + money(x.amount) + '</b>'; },
+        empty: 'No overtime this month.', emptyIcon: 'more_time',
+        body: function (x, p0) { var d0 = day.filter(function (y) { return y.name === p0.name; })[0]; x.innerHTML = kvHtml([['Location', p0.place], ['Days', p0.days], ['Hours', p0.hours], ['Amount', money(p0.amount)],
+          d0 ? [A.dateText, d0.worked + ' worked · ' + d0.hours + ' h OT · ' + money(d0.amount)] : null]); }
+      });
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+
+  /* ---------- upload ---------- */
+  function uploadTab(b) {
+    var SRC = AB.sources && AB.sources.length ? AB.sources.slice() : [{ key: '', label: 'Petpooja file', groups: [] }];
+    if (SRC.length > 1) SRC.push({ key: 'ALL', label: 'All locations in one file', groups: SRC.reduce(function (a, x) { return a.concat(x.groups || []); }, []) });
+    b.innerHTML = '<div class="grid ' + (SRC.length > 2 ? 'g3' : 'g2') + '">' + SRC.map(function (x, i) {
+      return '<div class="card"><h3>' + icon('upload_file') + ' ' + h(x.label) + '</h3><div class="small muted mb">' + h((x.groups || []).join(' · ')) + '</div>' +
+        '<div class="dz" data-dz="' + i + '">' + icon('cloud_upload') + '<b>Drop the Excel / CSV file here</b><div class="small">.xlsx · .xls · .csv · back dates</div></div><div data-ur="' + i + '" class="mt"></div></div>';
+    }).join('') + '</div>' +
+      '<label class="check mt"><input type="checkbox" id="rep" checked> Replace the day(s) in the file</label>' +
+      '<details class="card mt"><summary class="b" style="cursor:pointer">' + icon('content_paste') + ' Paste the rows instead</summary><div class="mt">' +
+      (SRC.length > 1 ? '<div class="field"><label>File</label><select class="inp sm" id="psrc">' + SRC.map(function (x, i) { return '<option value="' + i + '">' + h(x.label) + '</option>'; }).join('') + '</select></div>' : '') +
+      '<textarea class="inp" id="pt" rows="6" placeholder="Copy the table from Excel with the header row"></textarea>' +
+      '<div class="row mt"><span class="grow"></span><button class="btn sm" id="pgo">' + icon('upload') + 'Upload pasted rows</button></div><div id="pur" class="mt"></div></div></details>';
+    function send(i, data, btn, out) {
+      var x = SRC[i];
+      out.innerHTML = loadingHtml('Reading the punches…');
+      if (btn) busy(btn, true);
+      data.replace = $('#rep', b).checked;
+      if (x.key) data.source = x.key;
+      api('at.upload', data).then(function (r) {
+        if (btn) busy(btn, false);
+        toast(r.message, 'ok'); delete S.cache.atBoot; delete S.cache.penMeta; dcDel('at.hub', {}); AB.dates = r.allDates;
+        var t = r.summary.totals;
+        out.innerHTML = '<div class="okbox mb">' + icon('check_circle') + ' ' + h(r.message) + (r.people ? ' · ' + r.people + ' people' : '') + '</div>' +
+          (r.skipped ? '<div class="warn mb">' + icon('event_busy') + ' Left out: ' + h(r.skipped) + '</div>' : '') +
+          '<div class="kpis k5">' + kpiBox('Records', t.total, '', '') + kpiBox('Full day', t.full, '', 'green') + kpiBox('Half day', t.half, '', 'orange') +
+          kpiBox('Absent', t.absent, '', 'red') + kpiBox('Punch missed', t.missed, '', 'violet') + '</div>' +
+          (r.summary.groups.length ? '<div class="mt">' + tableHtml([{ t: 'Location', k: 'groupName' }, { t: 'Records', cls: 'num', k: 'total' }, { t: 'Full', cls: 'num', k: 'full' },
+            { t: 'Half', cls: 'num', k: 'half' }, { t: 'Absent', cls: 'num', k: 'absent' }, { t: 'Missed', cls: 'num', k: 'missed' },
+            { t: 'Penalty', cls: 'num', f: function (g) { return g.penalty ? money(g.penalty) : '—'; } }], r.summary.groups) + '</div>' : '') +
+          (r.unmatched.length ? '<details class="card mt"><summary class="b" style="cursor:pointer">' + icon('link_off') + ' Not matched to the employee master (' + r.unmatched.length + ')</summary><div class="mt">' + unmatchedHtml(r.unmatched) + '</div></details>' : '') +
+          ((r.left || []).length ? '<details class="card mt"><summary class="b" style="cursor:pointer">' + icon('person_off') + ' Inactive in Petpooja (' + r.left.length + ')</summary><div class="small mt">' + r.left.map(h).join(' · ') + '</div></details>' : '') +
+          '<div class="row mt"><span class="grow"></span><button class="btn sm" data-see>' + icon('visibility') + 'Attendance records</button></div>';
+        bindUnmatched(out, r.unmatched, function () { uploadTab(b); });
+        $('[data-see]', out).onclick = function () { S.params.from = r.dates[0]; S.params.to = r.dates[r.dates.length - 1]; jump('data'); };
+      }).catch(function (e) { if (btn) busy(btn, false); out.innerHTML = errHtml(e); });
+    }
+    function takeFile(i, f) {
+      if (!f) return;
+      if (!/\.(xlsx|xls|csv|txt)$/i.test(f.name)) return toast('Pick an Excel (.xlsx / .xls) or CSV file.', 'bad');
+      if (f.size > 20 * 1048576) return toast('The file is larger than 20 MB.', 'bad');
+      readB64(f).then(function (d) { send(i, { mode: 'file', base64: d, fileName: f.name, mimeType: f.type }, null, $('[data-ur="' + i + '"]', b)); });
+    }
+    $$('[data-dz]', b).forEach(function (dz) {
+      var i = +dz.dataset.dz;
+      dz.onclick = function () { var inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.xlsx,.xls,.csv,.txt'; inp.onchange = function () { takeFile(i, inp.files[0]); }; inp.click(); };
+      dz.ondragover = function (e) { e.preventDefault(); dz.classList.add('over'); };
+      dz.ondragleave = function () { dz.classList.remove('over'); };
+      dz.ondrop = function (e) { e.preventDefault(); dz.classList.remove('over'); takeFile(i, e.dataTransfer.files[0]); };
+    });
+    $('#pgo', b).onclick = function () {
+      if (!val('#pt', b)) return toast('Paste the rows first.', 'bad');
+      send($('#psrc', b) ? +$('#psrc', b).value : 0, { mode: 'paste', text: $('#pt', b).value }, this, $('#pur', b));
+    };
+  }
+  function unmatchedHtml(list) {
+    return tableHtml([{ t: 'Date', f: function (u) { return '<span class="nowrap">' + h(u.date) + '</span>' + (u.days > 1 ? '<div class="tiny muted">' + u.days + ' days</div>' : ''); } }, { t: 'ID in the file', f: function (u) { return '<b>' + h(u.employeeId) + '</b>' + (u.upload ? '<div class="tiny muted">' + h(u.upload) + '</div>' : ''); } }, { t: 'Name', k: 'name' },
+      { t: 'Why', f: function (u) { return '<span class="small muted">' + h(u.reason) + '</span>'; } },
+      { t: '', f: function (u, i) { return '<button class="btn sm soft" data-map="' + i + '">' + icon('link') + 'Map</button>'; } }], list, { max: '40vh' });
+  }
+  function bindUnmatched(box, list, done) {
+    $$('[data-map]', box).forEach(function (x) { x.onclick = function () { mapModal(list[+x.dataset.map], done); }; });
+  }
+  function mapModal(u, done) {
+    modal({ title: 'Map "' + u.employeeId + '" to an employee', body: '<p class="small muted" style="margin-top:0">From now on, punches with ID <b>' + h(u.employeeId) + '</b> (' + h(u.name || 'no name') + ') count as this employee.</p>' +
+      '<input class="inp sm mb" data-s placeholder="Search name / ID…" value="' + h((u.name || '').split(' ')[0]) + '"><div class="msel" data-l>' + loadingHtml() + '</div>',
+      onOpen: function (m) {
+        cached('atEmps', function () { return api('at.employees'); }).then(function (d) {
+          function paint() {
+            var q = val('[data-s]', m).toLowerCase();
+            $('[data-l]', m).innerHTML = d.employees.filter(function (e) { return !q || (e.employeeId + ' ' + e.name + ' ' + e.group).toLowerCase().indexOf(q) >= 0; }).slice(0, 80).map(function (e) {
+              return '<label><input type="radio" name="mp" value="' + h(e.employeeId) + '"><span class="grow"><b>' + h(e.name) + '</b> <span class="small muted">' + h(e.employeeId + ' · ' + e.designation + ' · ' + e.group) + '</span></span></label>';
+            }).join('') || '<div class="empty">Nobody matches.</div>';
+          }
+          $('[data-s]', m).oninput = debounce(paint, 120); paint();
+        }).catch(function (e) { $('[data-l]', m).innerHTML = errHtml(e); });
+      },
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('link') + 'Map', click: function (close, m, btn) {
+        var pick = $('input[name=mp]:checked', m); if (!pick) return toast('Pick the employee.', 'bad');
+        busy(btn, true);
+        api('at.map', { attendanceId: u.employeeId, masterId: pick.value }).then(function (r) { close(); toast(r.message, 'ok'); delete S.cache.penMeta; if (done) done(); })
+          .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+
+  /* ---------- attendance (day / range view) ---------- */
+  function dataTab(b) {
+    var st = { from: S.params.from || latest(), to: S.params.to || S.params.from || latest(), group: '', status: S.params.dstatus || '', q: '' }, D = null, SRC = AB.sources || [];
+    b.innerHTML = '<div class="card"><div class="filters"><span class="small muted">From</span><input type="date" class="inp sm" id="df" value="' + st.from + '"><span class="small muted">to</span><input type="date" class="inp sm" id="dt" value="' + st.to + '">' +
+      groupSel('dg', '') + '<input class="inp sm" id="dq" placeholder="Search name / ID" style="width:170px">' +
+      (AB.canConfig ? '<span class="grow"></span><button class="btn sm ghost" id="ddel">' + icon('delete') + 'Remove a day</button>' : '') + '</div>' +
+      '<div class="row gap6 mt" id="dst">' + [['', 'All'], ['Full Day', 'Full day'], ['Half Day', 'Half day'], ['Absent', 'Absent'], ['missed', 'Punch missed'], ['edited', 'Edited'], ['penalty', 'With penalty']].map(function (s0) {
+        return '<span class="qf' + (s0[0] === st.status ? ' on' : '') + '" data-s="' + s0[0] + '">' + h(s0[1]) + '</span>'; }).join('') + '</div>' +
+      (AB.dates.length ? '<div class="small muted" style="margin-top:8px">Uploaded: ' + AB.dates.slice(0, 8).map(function (d) { return '<a href="#" data-d="' + d.key + '">' + h(d.label) + '</a>'; }).join(' · ') + '</div>' : '') +
+      '</div><div id="dr" class="mt">' + loadingHtml() + '</div>';
+    function load(done) {
+      if (st.from > st.to) { var t = st.from; st.from = st.to; st.to = t; }
+      if ((new Date(st.to) - new Date(st.from)) / 86400000 > 31) return ($('#dr', b).innerHTML = errHtml('Pick at most 31 days at a time.'));
+      if (!st.keep) $('#dr', b).innerHTML = loadingHtml();
+      api('at.data', { from: st.from, to: st.to, group: st.group }).then(function (d) { D = d; paint(); if (done) done(); }).catch(function (e) { $('#dr', b).innerHTML = errHtml(e); });
+    }
+    function filesHtml() {
+      var src = D.sources && D.sources.length ? D.sources : SRC, U = D.uploads || {}, keys = Object.keys(U).sort().reverse();
+      if (!src.length || !keys.length) return '';
+      if (st.from === st.to) {
+        var u = U[st.from] || {};
+        return '<div class="row gap6 mb" style="flex-wrap:wrap">' + src.map(function (x) { return u[x.key] ? chip(x.label + ' · ' + u[x.key], 'green') : chip(x.label + ' · not uploaded', 'red'); }).join('') + '</div>';
+      }
+      var miss = keys.filter(function (k) { return src.some(function (x) { return !U[k][x.key]; }); });
+      if (!miss.length) return '';
+      return '<div class="warn mb">' + icon('upload_file') + ' Only one file uploaded on: ' + miss.map(function (k) {
+        return h(atDateText(k)) + ' (' + src.filter(function (x) { return U[k][x.key]; }).map(function (x) { return h(x.label); }).join(', ') + ')'; }).join(' · ') + '</div>';
+    }
+    function paint() {
+      var q = st.q, rows = D.rows.filter(function (r) {
+        if (q && (r.name + ' ' + r.employeeId + ' ' + r.uploadedId + ' ' + r.designation).toLowerCase().indexOf(q) < 0) return false;
+        if (st.status === 'missed') return /missed/i.test(r.status);
+        if (st.status === 'edited') return r.edited;
+        if (st.status === 'penalty') return r.penaltyAmount > 0;
+        return !st.status || r.status === st.status;
+      });
+      var t = D.summary.totals, multi = st.from !== st.to;
+      $('#dr', b).innerHTML = filesHtml() + '<div class="kpis k5 mb">' + kpiBox('Records', t.total, '', '') + kpiBox('Full day', t.full, '', 'green') + kpiBox('Half day', t.half, '', 'orange') +
+        kpiBox('Absent', t.absent, '', 'red') + kpiBox('Penalty', money(t.penalty), '', 'violet', t.missed + ' punch missed') + '</div>' +
+        (D.unmatched.length && AB.showUnmatched ? '<details class="card mb"><summary class="b" style="cursor:pointer">' + icon('link_off') + ' ' + D.unmatched.length + ' punch row(s) not matched to the master</summary><div class="mt">' + unmatchedHtml(D.unmatched) + '</div></details>' : '') +
+        '<div id="drL"></div>';
+      st.rows = rows; st.shown = Math.min(rows.length, st.shown && st.keep ? st.shown : 100); st.keep = false;
+      list();
+      bindUnmatched($('#dr', b), D.unmatched, load);
+    }
+    function list() {
+      var box = $('#drL', b), rows = st.rows, multi = st.from !== st.to;
+      if (!rows.length) { box.innerHTML = '<div class="card">' + emptyHtml('event_busy', D.rows.length ? 'Nothing matches the filter.' : 'No attendance uploaded for these dates.') + '</div>'; return; }
+      box.innerHTML = '<div class="arecs">' + rows.slice(0, st.shown).map(function (r, i) {
+        var sh = r.shiftTime ? r.shiftTime + (r.shiftFrom ? ' · ' + r.shiftFrom : '') : r.shift ? r.shift + (r.shiftFrom ? ' · ' + r.shiftFrom : '') : '';
+        var canPen = D.canEdit && r.applyPenalty && r.groupKey !== 'UNMATCHED';
+        var meta = [r.punchIn === '-' && r.punchOut === '-' ? 'No punch' : (r.punchIn === '-' ? '—' : r.punchIn) + ' – ' + (r.punchOut === '-' ? '—' : r.punchOut), r.workedText !== '-' ? r.workedText : '', sh ? 'Shift ' + sh : '',
+          r.lateInMin > 0 ? 'late ' + r.lateInMin + ' min' : '', r.earlyOutMin > 0 ? 'left ' + r.earlyOutMin + ' min early' : '',
+          r.leaveText && r.status === 'Absent' ? (r.unapproved ? 'Unapproved · ' : '') + r.leaveText : '', r.otAmount > 0 ? 'OT ' + r.otHours + ' h · ' + money(r.otAmount) : ''].filter(Boolean).join(' · ');
+        var pl = (r.penaltyLines || []).map(function (l, j) {
+          var off = l.exempt || !(l.amount > 0), tag = l.exempt ? ' · exception' : l.edited && !l.amount ? ' · waived' : l.edited ? ' · changed' : l.basis === 'WAIVE' ? ' · waived' : l.manual ? ' · by hand' : '';
+          return '<button class="pchip' + (off ? ' off' : '') + (l.manual ? ' man' : '') + (D.canEdit && !l.exempt ? '' : ' ro') + '" data-pl="' + i + '|' + j + '">' + h(l.text || l.label) + ' · ' + money(l.amount) + h(tag) + (D.canEdit && !l.exempt ? icon('edit') : '') + '</button>';
+        }).join('');
+        return '<div class="arec"><div class="arec-h"><div class="grow" style="min-width:0"><b>' + h(r.name) + '</b>' + (r.edited ? ' <span class="chip mini blue">edited</span>' : '') + (r.regularised ? ' <span class="chip mini violet">regularised</span>' : '') +
+          '<div class="tiny muted">' + h([multi ? r.date : '', r.employeeId + (r.uploadedId && r.uploadedId !== r.employeeId ? ' (file ' + r.uploadedId + ')' : ''), r.groupName, r.designation].filter(Boolean).join(' · ')) + '</div></div>' +
+          '<div class="arec-r">' + statusChip(r.status) + '<b style="color:' + (r.penaltyAmount > 0 ? 'var(--red)' : 'var(--muted)') + '">' + money(r.penaltyAmount) + '</b></div></div>' +
+          '<div class="small">' + h(meta) + '</div>' +
+          '<div class="arec-p">' + (pl || '<span class="tiny muted">No penalty</span>') + '<span class="grow"></span>' +
+          (canPen ? '<button class="btn sm ghost" data-np="' + i + '">' + icon('add') + 'Penalty</button>' : '') +
+          (D.canEdit && r.rowKey ? '<button class="btn sm ghost" data-ed="' + i + '">' + icon('edit') + 'Edit punches</button>' : '') + '</div></div>';
+      }).join('') + '</div>' + (rows.length > st.shown ? '<div class="row mt"><span class="grow"></span><span class="small muted">' + st.shown + ' of ' + rows.length + '</span><button class="btn sm ghost" id="drMore">Show 100 more</button></div>' : '');
+      $$('[data-pl]', box).forEach(function (x) { x.onclick = function () { var k = x.dataset.pl.split('|'), r = rows[+k[0]], l = r.penaltyLines[+k[1]]; if (D.canEdit && !l.exempt) penModal(r, l); }; });
+      $$('[data-np]', box).forEach(function (x) { x.onclick = function () { addModal(rows[+x.dataset.np]); }; });
+      $$('[data-ed]', box).forEach(function (x) { x.onclick = function () { editRow(rows[+x.dataset.ed]); }; });
+      if ($('#drMore', box)) $('#drMore', box).onclick = function () { st.shown = Math.min(rows.length, st.shown + 100); list(); };
+    }
+    function after(res) { toast(res.message, 'ok'); dcDel('at.hub', {}); delete S.cache.penMeta; st.keep = true; var y = window.scrollY; load(function () { window.scrollTo(0, y); }); }
+    function penModal(r, l) {
+      modal({ title: (l.text || l.label) + ' · ' + r.name, body: '<div class="small muted mb">' + h([r.date, r.employeeId, r.groupName].join(' · ')) +
+          (l.edited && l.original !== undefined ? ' · automatic amount ' + h(money(l.original)) : '') + (l.basis ? ' · ' + h(money(l.wage) + ' at 2× daily wage · ' + money(l.fixed) + ' fixed') : '') + '</div>' +
+          '<div class="form-grid"><div class="field"><label>Amount (₹)</label><input class="inp" inputmode="numeric" data-a value="' + h(l.amount) + '"></div>' +
+          '<div class="field"><label>Remark</label><input class="inp" data-n value="' + h(l.notes) + '"></div></div>',
+        actions: [{ label: 'Cancel', cls: 'ghost' }].concat(l.manual ? [{ label: icon('delete') + 'Remove', cls: 'ghost', click: function (close, m, bt) {
+            busy(bt, true); api('pen.remove', { entryId: l.entryId }).then(function (res) { close(); after(res); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+          } }] : l.edited ? [{ label: icon('restart_alt') + 'Automatic', cls: 'ghost', click: function (close, m, bt) { send(close, m, bt, { restore: true }); } }] : [])
+          .concat([{ label: icon('block') + 'Waive', cls: 'amber', click: function (close, m, bt) { send(close, m, bt, { amount: 0 }); } },
+            { label: icon('save') + 'Save', cls: 'green', click: function (close, m, bt) { send(close, m, bt, {}); } }]) });
+      function send(close, m, bt, extra) {
+        var d0 = l.manual ? { entryId: l.entryId } : { auto: true, date: r.dateKey, employeeId: r.employeeId, ruleId: l.ruleId };
+        busy(bt, true);
+        api('pen.edit', Object.assign(d0, { amount: val('[data-a]', m), notes: val('[data-n]', m) }, extra)).then(function (res) { close(); after(res); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+      }
+    }
+    function addModal(r) {
+      var cat = (D.catalog || []).filter(function (c) { return !c.groupKey || c.groupKey === r.groupKey; });
+      if (!cat.length) return toast('No penalty type is set for ' + r.groupName + ' (Rules ▸ Penalty rules).', 'bad');
+      modal({ title: 'Add a penalty · ' + r.name, body: '<div class="small muted mb">' + h([r.date, r.employeeId, r.groupName].join(' · ')) + '</div>' +
+          '<div class="field"><label>Penalty</label><select class="inp" data-c><option value="">Pick…</option>' + cat.map(function (c, i) { return '<option value="' + i + '">' + h(c.label + ' · ' + money(c.amount)) + '</option>'; }).join('') + '</select></div>' +
+          '<div class="form-grid"><div class="field"><label>Amount (₹)</label><input class="inp" inputmode="numeric" data-a></div><div class="field"><label>Remark</label><input class="inp" data-n></div></div>',
+        onOpen: function (m) { $('[data-c]', m).onchange = function () { var c = cat[+this.value]; $('[data-a]', m).value = c ? c.amount : ''; }; },
+        actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('add') + 'Add penalty', cls: 'green', click: function (close, m, bt) {
+          var c = cat[+val('[data-c]', m)]; if (!val('[data-c]', m) || !c) return toast('Pick the penalty.', 'bad');
+          busy(bt, true);
+          api('pen.add', { employeeId: r.employeeId, date: r.dateKey, ruleId: c.ruleId, amount: val('[data-a]', m), notes: val('[data-n]', m) }).then(function (res) { close(); after(res); }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+        } }] });
+    }
+    function editRow(r) {
+      if (!r.rowKey) return toast(r.name + ' has no punch that day.');
+      var F = [['Punch In', r.punchIn, 'e.g. 09:05 AM'], ['Punch Out', r.punchOut, 'e.g. 06:10 PM'], ['Total Working Hours', r.workedText, 'e.g. 9h 5m'], ['Total Break', r.breakText, 'e.g. 45m'],
+        ['Employee Name', r.name, ''], ['Designation', r.designation, ''], ['Department', r.department, '']];
+      modal({ title: r.name + ' · ' + r.date, body: '<div class="small muted mb">' + h(r.employeeId) + (r.uploadedId && r.uploadedId !== r.employeeId ? ' (file: ' + h(r.uploadedId) + ')' : '') + ' · ' + h(r.groupName) + ' · matched by ' + h(r.matchMethod) + '</div>' +
+        '<div class="form-grid">' + F.map(function (f, i) { return '<div class="field"><label>' + h(f[0]) + '</label><input class="inp sm" data-f="' + i + '" value="' + h(f[1] === '-' ? '' : f[1]) + '" placeholder="' + h(f[2]) + '"></div>'; }).join('') + '</div>' +
+        '<div class="small muted mt">Changed fields are kept when the day is uploaded again.</div>',
+        actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, m, btn) {
+          var vals = {}; F.forEach(function (f, i) { var nv = val('[data-f="' + i + '"]', m); if (nv !== (f[1] === '-' ? '' : f[1])) vals[f[0]] = nv; });
+          if (!Object.keys(vals).length) return close();
+          busy(btn, true);
+          api('at.saveRow', { rowKey: r.rowKey, values: vals }).then(function (res) { close(); after(res); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+        } }] });
+    }
+    $('#df', b).onchange = function () { st.from = this.value; if (st.to < st.from) { st.to = st.from; $('#dt', b).value = st.to; } load(); };
+    $('#dt', b).onchange = function () { st.to = this.value; load(); };
+    $('#dg', b).onchange = function () { st.group = this.value; load(); };
+    $('#dq', b).oninput = debounce(function () { st.q = val('#dq', b).toLowerCase(); if (D) paint(); }, 150);
+    $$('#dst [data-s]', b).forEach(function (x) { x.onclick = function () { st.status = x.dataset.s; $$('#dst [data-s]', b).forEach(function (y) { y.classList.toggle('on', y === x); }); if (D) paint(); }; });
+    $$('[data-d]', b).forEach(function (a) { a.onclick = function (e) { e.preventDefault(); st.from = st.to = a.dataset.d; $('#df', b).value = st.from; $('#dt', b).value = st.to; load(); }; });
+    if ($('#ddel', b)) $('#ddel', b).onclick = function () {
+      modal({ title: 'Remove ' + fmtISO(st.from), body: '<div class="field"><label>File</label><select class="inp" data-src><option value="">Both files</option>' +
+          SRC.map(function (x) { return '<option value="' + h(x.key) + '">' + h(x.label) + '</option>'; }).join('') + '</select></div>' +
+          '<div class="small muted">The punches of ' + h(fmtISO(st.from)) + ' are deleted. Upload the file again to bring them back.</div>',
+        actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('delete') + 'Remove', cls: 'red', click: function (close, m, btn) {
+          busy(btn, true);
+          api('at.deleteDate', { date: st.from, source: val('[data-src]', m) }).then(function (r) { close(); toast(r.message, 'ok'); AB.dates = r.dates; delete S.cache.atBoot; delete S.cache.penMeta; dcDel('at.hub', {}); load(); })
+            .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+        } }] });
+    };
+    S.params.from = S.params.to = ''; S.params.dstatus = '';
+    load();
+  }
+
+  /* ---------- rules (the config tabs) ---------- */
+  function rulesTab(b) {
+    var sub = S.params.rtab || 'locations';
+    var tabs = [['locations', 'Locations'], ['shifts', 'Shifts'], ['penalty', 'Penalty rules'], ['empshift', 'Employee shift'], ['idmap', 'ID mapping'], ['general', 'General']];
+    b.innerHTML = (AB.canConfig ? '' : '<div class="mb">' + chip('View only', 'grey') + '</div>') +
+      tabsHtml(tabs, sub) + '<div id="rb"></div>';
+    bindTabs(b, function (t) { sub = t; S.params.rtab = t; load(); });
+    function load() {
+      var x = $('#rb', b); x.innerHTML = loadingHtml();
+      if (sub === 'empshift') return empShiftPanel(x, function () { delete S.cache.atBoot; delete S.cache.penMeta; });
+      api('at.table', { tab: sub }).then(function (d) { atGrid(x, d, AB, function () { delete S.cache.atBoot; delete S.cache.penMeta; }); }).catch(function (e) { x.innerHTML = errHtml(e); });
+    }
+    load();
+  }
+  show();
+};
+
+/** An editable copy of one config tab. General = only the values change. */
+var AT_OPTIONS = { 'Active': ['Yes', 'No'], 'Apply Penalty': ['Yes', 'No'],
+  'Rule Type': ['LATE_IN', 'EARLY_OUT', 'LATE_OUT', 'EXCESS_BREAK', 'SHORT_HOURS', 'HALF_DAY', 'ABSENT', 'MISSING_PUNCH', 'UNAPPROVED_LEAVE', 'MANUAL'], 'Overtime': ['Yes', 'No'],
+  'Amount Type': ['FIXED', 'PER_MINUTE', 'PER_HOUR', 'PERCENT_DAILY', 'PERCENT_MONTHLY'] };
+function atGrid(x, d, AB, saved) {
+  var H = d.headers, gen = d.tab === 'general', rows = d.rows.map(function (r) { return Object.assign({}, r); });
+  var groupKeys = AB.groups.map(function (g) { return g.groupKey; }), shiftNames = AB.shiftNames || [];
+  function cell(h0, v, i) {
+    var ro = !d.editable || (gen && h0 !== 'Value');
+    if (ro) return '<td class="small' + (h0 === 'Notes' ? ' wrap' : '') + '">' + h(v) + '</td>';
+    var opts = AT_OPTIONS[h0];
+    if (opts) return '<td><select class="inp sm" data-c="' + i + '|' + h(h0) + '" style="min-width:90px">' + (opts.indexOf(v) < 0 ? '<option>' + h(v) + '</option>' : '') + opts.map(function (o) { return '<option' + (o === v ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></td>';
+    var list = h0 === 'Group Key' ? ' list="atGk"' : (h0 === 'Shift' || h0 === 'Shift Name') ? ' list="atSh"' : '';
+    var w = /Notes|Label|Location|Display|Value/.test(h0) ? 170 : /ID|Key|Name/.test(h0) ? 120 : 80;
+    return '<td><input class="inp sm" data-c="' + i + '|' + h(h0) + '" value="' + h(v) + '"' + list + ' style="min-width:' + w + 'px"></td>';
+  }
+  function paint() {
+    x.innerHTML = '<datalist id="atGk">' + groupKeys.map(function (k) { return '<option value="' + h(k) + '">'; }).join('') + '</datalist>' +
+      '<datalist id="atSh"><option value="All"><option value="None">' + shiftNames.map(function (k) { return '<option value="' + h(k) + '">'; }).join('') + '</datalist>' +
+      '<div class="tbl-wrap" style="max-height:62vh;overflow:auto"><table class="tbl grid-edit"><thead><tr>' + H.map(function (h0) { return '<th>' + h(h0) + '</th>'; }).join('') + (d.editable && !gen ? '<th></th>' : '') + '</tr></thead><tbody>' +
+      rows.map(function (r, i) { return '<tr>' + H.map(function (h0) { return cell(h0, r[h0] === undefined ? '' : String(r[h0]), i); }).join('') + (d.editable && !gen ? '<td><button class="icon-btn" data-del="' + i + '" title="Remove row">' + icon('delete') + '</button></td>' : '') + '</tr>'; }).join('') +
+      '</tbody></table></div>' +
+      (d.editable ? '<div class="row mt">' + (gen ? '' : '<button class="btn sm ghost" data-add>' + icon('add') + 'Add row</button>') + '<span class="grow"></span><button class="btn green" data-save>' + icon('save') + 'Save ' + h(d.tab === 'idmap' ? 'ID mapping' : 'rules') + '</button></div>' : '');
+    $$('[data-c]', x).forEach(function (e) { e.oninput = e.onchange = function () { var k = e.dataset.c.split('|'); rows[+k[0]][k[1]] = e.value; e.closest('tr').classList.add('dirty'); }; });
+    $$('[data-del]', x).forEach(function (bt) { bt.onclick = function () { rows.splice(+bt.dataset.del, 1); paint(); }; });
+    if ($('[data-add]', x)) $('[data-add]', x).onclick = function () { var o = {}; H.forEach(function (h0) { o[h0] = h0 === 'Active' ? 'Yes' : ''; }); rows.push(o); paint(); var w = $('.tbl-wrap', x); w.scrollTop = w.scrollHeight; };
+    if ($('[data-save]', x)) $('[data-save]', x).onclick = function () {
+      var btn = this; busy(btn, true, 'Saving…');
+      api('at.tableSave', { tab: d.tab, rows: rows }).then(function (r) { busy(btn, false); toast(r.message, 'ok'); $$('tr.dirty', x).forEach(function (t) { t.classList.remove('dirty'); }); if (saved) saved(); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+  }
+  paint();
+}
+/* =====================================================================
+   HR Dashboard — attendance per location, penalties by basis, unapproved leave,
+   overtime (Attendance workbook + Loan & Advance) and hiring / calling
+   (FMS Hiring workbook + HR Calling sheet). Every figure is shown once.
+   ===================================================================== */
+function hrdDash(n) { return n ? String(n) : '<span class="muted">—</span>'; }
+/** Attendance of one day per location — also used on the Attendance Manager overview. */
+function hrdPlacesHtml(A) {
+  var tot = { name: 'Total', staff: 0, present: 0, full: 0, half: 0, missed: 0, approved: 0, weekOff: 0, unapproved: 0, absentOther: 0, late: 0, ot: 0, notInFile: 0, uploaded: true, total: true };
+  (A.places || []).forEach(function (p) { Object.keys(tot).forEach(function (k) { if (typeof tot[k] === 'number') tot[k] += p[k] || 0; }); });
+  var rows = (A.places || []).concat([tot]);
+  return tableHtml([
+    { t: 'Location', f: function (p) { return p.total ? '<b>Total</b>' : '<b>' + h(p.name) + '</b>' + (p.uploaded ? '' : '<div class="tiny" style="color:var(--orange)">not in the punch file</div>'); } },
+    { t: 'Staff', cls: 'num', f: function (p) { return '<b>' + p.staff + '</b>'; } },
+    { t: 'Present', cls: 'num', f: function (p) {
+      if (!p.uploaded) return '<span class="muted">—</span>';
+      var bits = [p.full ? p.full + ' full' : '', p.half ? p.half + ' half' : '', p.missed ? p.missed + ' punch missed' : ''].filter(String).join(' · ');
+      return '<b style="color:var(--green)">' + p.present + '</b>' + (bits && !p.total ? '<div class="tiny muted nowrap">' + bits + '</div>' : ''); } },
+    { t: 'Approved leave', cls: 'num', f: function (p) { return hrdDash(p.approved); } },
+    { t: 'Week off', cls: 'num', f: function (p) { return hrdDash(p.weekOff); } },
+    { t: 'Unapproved', cls: 'num', f: function (p) { return p.unapproved ? '<b style="color:var(--red)">' + p.unapproved + '</b>' : hrdDash(0); } },
+    { t: 'Other absent', cls: 'num', f: function (p) { return hrdDash(p.absentOther); } },
+    { t: 'Late', cls: 'num', f: function (p) { return p.late ? '<span style="color:var(--orange)">' + p.late + '</span>' : hrdDash(0); } },
+    { t: 'Overtime', cls: 'num', f: function (p) { return hrdDash(p.ot); } },
+    { t: 'Not in file', cls: 'num', f: function (p) { return p.notInFile ? '<span class="muted" title="In the employee master but not in the punch file">' + p.notInFile + '</span>' : hrdDash(0); } }
+  ], rows);
+}
+
+V.hr_dashboard = function (el, p) {
+  var H = null, view = p.view || '', nav = S.nav;
+  el.innerHTML = pageHead('Recruitment', '', '<button class="btn sm ghost" id="rcR">' + icon('sync') + 'Refresh</button>') + '<div id="rcB">' + loadingHtml('Reading the hiring FMS…') + '</div>';
+  var B = $('#rcB', el);
+  function alive() { return S.nav === nav && document.body.contains(B); }
+  function load(force) {
+    if (force) return api('hrd.hire', { force: true }).then(function (d) { H = d; dcSet(dcKey('hrd.hire', {}), d); show(); });
+    return live('hrd.hire', {}, function (d) { H = d; show(); }, { alive: alive }).catch(function (e) { if (!H) B.innerHTML = errHtml(e); });
+  }
+  $('#rcR', el).onclick = function () { var b = this; busy(b, true); load(true).then(function () { busy(b, false); }).catch(function (e) { busy(b, false); toast(e.message, 'bad'); }); };
+  function back() { if (p.back) return go(p.back, {}); view = ''; delete S.params.view; show(); }
+  function open(v) {
+    if (v === 'poster') return go('poster', {});
+    if (v === 'fms') return go('fms', {});
+    if (v === 'sheet') { if (H.url) window.open(H.url, '_blank'); return; }
+    view = v; S.params.view = v; show();
+  }
+  function show() {
+    if (!H) return;
+    if (H.error) { B.innerHTML = errHtml(H.error); return; }
+    var I = H.indents || {}, P = H.pipeline || {}, O = H.onboarding || {}, C = H.calling || {};
+    if (view) return detail(view, I, P, O, C);
+    var prob = ((O.probation || []).filter(function (x) { return /probation/i.test(x.name); })[0] || {}).count || 0;
+    B.innerHTML = '<div id="rcC"></div><div class="grid g2 mt"><div class="card"><div class="row mb"><h3 class="grow" style="margin:0">' + icon('account_tree') + ' FMS overview</h3>' +
+      (has('fms') ? '<button class="btn sm soft" id="rcF">' + icon('pending_actions') + 'Pending FMS</button>' : '') + '</div><div id="rcO"></div></div><div id="rcM"></div></div>';
+    hubCards($('#rcC', B), [
+      { key: 'indent', icon: 'assignment_add', label: 'Indents pending', value: P.error ? '—' : num(P.inProgress || 0), sub: P.error ? h(P.error) : (P.late || []).length + ' overdue · ' + (P.offersMonth || 0) + ' offers this month' },
+      { key: 'joined', icon: 'how_to_reg', label: 'Joined this month', value: O.error ? '—' : num((O.joined || []).length), sub: O.error ? h(O.error) : num(prob) + ' under probation' },
+      { key: 'calls', icon: 'call', label: 'Calls this week', value: C.error ? '—' : num(C.week || 0), sub: C.error ? h(C.error) : (C.today || 0) + ' today · ' + num(C.followUps || 0) + ' follow-ups' },
+      { key: 'interviews', icon: 'event', label: 'Interviews scheduled', value: C.error ? '—' : num(C.interviewCount || 0), sub: C.interviews && C.interviews[0] ? 'next ' + h(C.interviews[0].when) : 'none coming' }
+    ], open);
+    var st = (P.steps || []).filter(function (x) { return x.pending || x.overdue; }).slice(0, 3);
+    $('#rcO', B).innerHTML = (st.length ? st.map(function (x) {
+      return '<div class="row small" style="margin:6px 0"><span class="grow">' + h(x.n + '. ' + x.name) + '</span>' + (x.overdue ? chip(x.overdue + ' late', 'red') : '') + chip(x.pending + ' pending', 'orange') + '</div>'; }).join('')
+      : '<div class="small muted">Nothing pending in the indent → offer letter FMS.</div>') +
+      '<div class="tiny muted mt">' + num(P.inProgress || 0) + ' in progress · ' + num(P.toClose || 0) + ' to close · ' + num(P.closed || 0) + ' closed</div>';
+    if ($('#rcF', B)) $('#rcF', B).onclick = function () { go('fms', {}); };
+    var more = [{ key: 'probation', icon: 'hourglass_top', label: 'Under probation', value: num(prob), sub: (O.probationMonth || 0) + ' this month' },
+      { key: 'calling', icon: 'support_agent', label: 'Calling records', value: num(C.total || 0), sub: 'last call ' + h(C.last || '—') }];
+    if (has('poster')) more.push({ key: 'poster', icon: 'campaign', label: 'Hiring poster', value: icon('chevron_right'), sub: 'Make a poster with the JD' });
+    if (has('fms')) more.push({ key: 'fms', icon: 'account_tree', label: 'FMS summary', value: icon('chevron_right'), sub: 'Step-wise · mark tasks done' });
+    hubCards($('#rcM', B), more, open);
+  }
+  function detail(v, I, P, O, C) {
+    var T = { indent: ['Indents pending', 'assignment_add'], joined: ['Joined this month', 'how_to_reg'], calls: ['Calls this week', 'call'], interviews: ['Interviews scheduled', 'event'],
+      probation: ['Under probation', 'hourglass_top'], calling: ['Calling records', 'support_agent'],
+      callsMonth: ['Calls · ' + monthLabelNow() + ' (' + num(C.month || 0) + ')', 'call'], ivMonth: ['Interview scheduled · ' + monthLabelNow() + ' (' + num(C.ivMonth || 0) + ')', 'event'],
+      offers: ['Offer letters given · ' + monthLabelNow() + ' (' + num(P.offersMonth || 0) + ')', 'description'], onboardMonth: ['Onboarding · ' + monthLabelNow() + ' (' + num(O.month || 0) + ')', 'how_to_reg'],
+      joinMonth: ['Joining · ' + monthLabelNow() + ' (' + num((H.joining || {}).month || 0) + ')', 'badge'] }[v] || ['Recruitment', 'person_search'];
+    var b = hubPanel(B, T[0], T[1], back, v === 'indent' && H.url ? '<a class="btn sm ghost" href="' + h(H.url) + '" target="_blank">' + icon('table_chart') + 'Hiring FMS</a>' : '');
+    if (v === 'indent') {
+      b.innerHTML = '<div class="grid g3"><div class="card"><h3>' + icon('location_on') + ' By location</h3>' + countBars(I.byPlace) + '</div><div class="card"><h3>' + icon('work') + ' By position</h3>' + countBars(I.byPos) + '</div>' +
+        '<div class="card"><h3>' + icon('description') + ' Offer letters · this month (' + (P.offersMonth || 0) + ')</h3>' + ((P.offers || []).length ? '<div class="rows">' + P.offers.map(function (x) {
+          return '<div class="r" style="cursor:default"><span class="grow"><b>' + h(x.pos) + '</b> <span class="tiny muted">' + h(x.place) + '</span></span><span class="tiny muted">' + h(x.when) + '</span></div>'; }).join('') + '</div>' : '<div class="small muted">None yet.</div>') + '</div></div>' +
+        '<div class="section-title">Overdue (' + (P.late || []).length + ')</div><div class="card">' + fmsLateHtml(P.late) + '</div>' +
+        '<div class="section-title">Positions in progress (' + (P.openList || []).length + ')</div><div id="rcL"></div>';
+      recList($('#rcL', b), P.openList || [], { title: function (x) { return h(x.pos) + ' <span class="tiny muted">' + h(x.place) + '</span>'; }, sub: function (x) { return h('Step ' + x.stepNo + '/' + x.of + ' · ' + x.step); },
+        right: function (x) { return x.late ? chip('late ' + x.late, 'red') : chip('on time', 'green'); }, empty: 'No position in progress.',
+        body: function (e, x) { e.innerHTML = kvHtml([['Position', x.pos], ['Location', x.place], ['Raised by', x.by], ['Joining by', x.join], ['At step', x.stepNo + ' of ' + x.of + ' · ' + x.step], x.late ? ['Late', x.late] : null]); } });
+    } else if (v === 'joined' || v === 'probation') {
+      var L = v === 'joined' ? (O.joined || []) : (O.probationList || []);
+      recList(b, L, { title: function (x) { return h(x.name); }, sub: function (x) { return h([x.pos, x.place, x.when].filter(Boolean).join(' · ')); },
+        right: function (x) { return chip(x.status || '—', /reject/i.test(x.status) ? 'red' : /appoint/i.test(x.status) ? 'green' : 'violet'); }, empty: v === 'joined' ? 'Nobody joined this month yet.' : 'Nobody is under probation.', emptyIcon: 'how_to_reg',
+        body: function (e, x) { e.innerHTML = kvHtml([['Position', x.pos], ['Location', x.place], ['Joined', x.when], ['Came on day 1', x.came], ['Probation', x.status], ['Onboarding step', x.step]]); } });
+    } else if (v === 'calls' || v === 'calling') {
+      var Lc = v === 'calls' ? (C.weekList || []) : (C.recent || []);
+      b.innerHTML = (v === 'calling' ? '<div class="grid g3 mb"><div class="card"><h3>' + icon('fact_check') + ' By status</h3>' + countBars(C.byStatus) + '</div><div class="card"><h3>' + icon('support_agent') + ' By caller <span class="small muted">(' + h(C.callerScope || '') + ')</span></h3>' + countBars(C.byCaller) + '</div>' +
+        '<div class="card"><h3>' + icon('work') + ' By position</h3>' + countBars(C.byPos) + '</div></div><div class="section-title">Latest calls</div>' : '') + '<div id="rcL"></div>' +
+        (C.url ? '<div class="row mt"><span class="grow"></span><a class="btn sm ghost" href="' + h(C.url) + '" target="_blank">' + icon('table_chart') + 'Calling records sheet</a></div>' : '');
+      recList($('#rcL', b), Lc, { title: function (x) { return h(x.name || '—'); }, sub: function (x) { return h([x.pos, x.by, x.when].filter(Boolean).join(' · ')); },
+        right: function (x) { return chip(x.status, /interview/i.test(x.status) ? 'green' : /follow/i.test(x.status) ? 'orange' : /not/i.test(x.status) ? 'grey' : 'blue'); }, empty: v === 'calls' ? 'No call logged this week.' : 'No call logged.', emptyIcon: 'call',
+        body: function (e, x) { e.innerHTML = kvHtml([['Candidate', x.name], ['Position', x.pos], ['Status', x.status], ['Called by', x.by], ['Date', x.when]]); } });
+    } else if (v === 'callsMonth') {
+      recList(b, C.monthList || [], { title: function (x) { return h(x.name || '—'); }, sub: function (x) { return h([x.pos, x.by, x.when].filter(Boolean).join(' · ')); },
+        right: function (x) { return chip(x.status, /interview/i.test(x.status) ? 'green' : /follow/i.test(x.status) ? 'orange' : /not/i.test(x.status) ? 'grey' : 'blue'); }, empty: 'No call logged this month.', emptyIcon: 'call' });
+    } else if (v === 'ivMonth') {
+      recList(b, C.ivMonthList || [], { title: function (x) { return h(x.name || '—'); }, sub: function (x) { return h([x.pos, x.by, x.called ? 'called ' + x.called : ''].filter(Boolean).join(' · ')); },
+        right: function (x) { return '<b class="nowrap">' + h(x.when || '—') + '</b>'; }, empty: 'No interview scheduled this month.', emptyIcon: 'event' });
+    } else if (v === 'offers') {
+      recList(b, P.offers || [], { title: function (x) { return h(x.pos || '—'); }, sub: function (x) { return h(x.place || ''); }, right: function (x) { return '<b class="nowrap">' + h(x.when) + '</b>'; },
+        empty: P.error ? P.error : 'No offer letter given this month.', emptyIcon: 'description' });
+    } else if (v === 'onboardMonth') {
+      recList(b, O.monthList || O.joined || [], { title: function (x) { return h(x.name); }, sub: function (x) { return h([x.pos, x.place, x.when].filter(Boolean).join(' · ')); },
+        right: function (x) { return chip(x.step === 'Done' ? 'All steps done' : x.step, x.step === 'Done' ? 'green' : 'orange'); }, empty: O.error ? O.error : 'No onboarding this month.', emptyIcon: 'how_to_reg',
+        body: function (e, x) { e.innerHTML = kvHtml([['Position', x.pos], ['Location', x.place], ['Started', x.when], ['Came on day 1', x.came], ['Probation', x.status], ['Onboarding step', x.step]]); } });
+    } else if (v === 'joinMonth') {
+      var J = H.joining || {};
+      recList(b, J.list || [], { title: function (x) { return h(x.name); }, sub: function (x) { return h([x.id, x.pos, x.place].filter(Boolean).join(' · ')); }, right: function (x) { return '<b class="nowrap">' + h(x.when) + '</b>'; },
+        empty: J.error ? J.error : 'Nobody joined this month (employee master ▸ Date Of Joining).', emptyIcon: 'badge' });
+    } else if (v === 'interviews') {
+      recList(b, C.interviews || [], { title: function (x) { return h(x.name || '—'); }, sub: function (x) { return h([x.pos, x.by].filter(Boolean).join(' · ')); },
+        right: function (x) { return '<b class="nowrap">' + h(x.when) + '</b>'; }, empty: 'No interview coming.', emptyIcon: 'event' });
+    }
+  }
+  load(false);
+};
+
+V.reports = function (el, p) {
+  el.innerHTML = pageHead('Reports', '') + '<div id="rpB">' + loadingHtml() + '</div>';
+  var B = $('#rpB', el);
+  api('rep.meta').then(function (M) {
+    var to = M.last || M.today, from = M.last ? M.last.slice(0, 8) + '01' : M.first;     // the month of the last day with punches
+    function gsel(k) { return '<select class="inp sm" id="' + k + 'g" style="width:auto"><option value="">All locations</option>' + M.groups.map(function (g) { return '<option value="' + h(g.key) + '">' + h(g.name) + '</option>'; }).join('') + '</select>'; }
+    function range(k, day) { return '<input type="date" class="inp sm" id="' + k + 'f" value="' + (day ? to : from) + '"><span class="small muted">to</span><input type="date" class="inp sm" id="' + k + 't" value="' + to + '">'; }
+    function month(k) { return '<input type="month" class="inp sm" id="' + k + 'm" value="' + M.month + '">'; }
+    var CARDS = [
+      { k: 'att', ic: 'fact_check', c: 'green', t: 'Attendance with penalties', sub: 'Location-wise · status, overtime, automatic and by-hand penalties', when: 'range', day: true, g: true, act: 'at.report', extra: { kind: 'attendance' } },
+      { k: 'pen', ic: 'money_off', c: 'red', t: 'Penalty report', sub: 'Per person summary + every penalty day', when: 'range', day: true, g: true, act: 'at.report', extra: { kind: 'penalty' } },
+      { k: 'hand', ic: 'front_hand', c: 'orange', t: 'Penalties given by hand', sub: 'Late punch in, unapproved leave, not in uniform, misbehaviour, not groomed … with the remark', when: 'range', g: false, act: 'pen.report', extra: { kind: 'charges' } },
+      { k: 'ot', ic: 'more_time', c: 'violet', t: 'Overtime', sub: 'Per employee + every overtime day', when: 'range', g: true, act: 'rep.ot', extra: {} },
+      { k: 'lv', ic: 'event_busy', c: 'blue', t: 'Leave', sub: 'Every leave of the month with status and replacement', when: 'month', act: 'rep.leaves', extra: {} },
+      { k: 'adv', ic: 'payments', c: 'brown', t: 'Running advances', sub: 'Per employee per month — the Loan & Advance column of salary preparation', when: 'month', act: 'rep.advances', extra: {}, screen: true }
+    ];
+    B.innerHTML = '<div class="grid g2">' + CARDS.map(function (c) {
+      return '<div class="card" data-card="' + c.k + '"><h3><span style="color:var(--' + c.c + ')">' + icon(c.ic) + '</span> ' + h(c.t) + '</h3><div class="tiny muted mb">' + h(c.sub) + '</div>' +
+        '<div class="filters">' + (c.when === 'month' ? month(c.k) : range(c.k, c.day)) + (c.g ? gsel(c.k) : '') + '<span class="grow"></span>' +
+        (c.screen ? '<button class="btn sm ghost" data-k="' + c.k + '" data-fmt="">' + icon('visibility') + 'Show</button>' : '') +
+        '<button class="btn sm" data-k="' + c.k + '" data-fmt="xlsx">' + icon('table_view') + 'Excel</button><button class="btn sm red" data-k="' + c.k + '" data-fmt="pdf">' + icon('picture_as_pdf') + 'PDF</button></div>' +
+        '<div data-res="' + c.k + '" class="mt"></div></div>';
+    }).join('') + '</div><div id="rpAdv" class="mt"></div>';
+    var byK = {}; CARDS.forEach(function (c) { byK[c.k] = c; });
+    $$('[data-fmt]', B).forEach(function (bt) { bt.onclick = function () {
+      var btn = this, c = byK[btn.dataset.k], fmt = btn.dataset.fmt, q = Object.assign({ format: fmt }, c.extra);
+      if (c.when === 'month') { q.month = val('#' + c.k + 'm', B); if (!q.month) return toast('Pick the month.', 'bad'); }
+      else { q.from = val('#' + c.k + 'f', B); q.to = val('#' + c.k + 't', B); if (!q.from || !q.to) return toast('Pick the dates.', 'bad'); }
+      if (c.g) q.group = val('#' + c.k + 'g', B);
+      var res = $('[data-res="' + c.k + '"]', B);
+      busy(btn, true, fmt ? 'Making…' : 'Reading…');
+      api(c.act, q).then(function (r) {
+        busy(btn, false);
+        if (!fmt) return advTable(r);
+        downloadB64(r.base64, r.fileName, r.mime);
+        res.innerHTML = '<div class="okbox">' + icon('check_circle') + ' ' + h(r.fileName) + (r.totals ? ' · ' + r.totals.total + ' records' + (r.totals.penalty ? ' · penalty ' + money(r.totals.penalty) : '') : '') + '</div>';
+      }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    }; });
+    function advTable(r) {
+      var box = $('#rpAdv', B);
+      box.innerHTML = '<div class="section-title">Running advances · ' + h(r.month) + '</div>' +
+        '<div class="kpis k3 mb">' + kpiBox('Running', money(r.total), 'payments', 'brown', 'approved / paid — deducted in salary') + kpiBox('Waiting', money(r.waiting), 'pending_actions', 'orange', 'not approved yet') +
+        kpiBox('People', r.people.length, 'groups', 'blue', h(r.month)) + '</div>' +
+        (r.people.length ? tableHtml([{ t: 'Employee', f: function (x) { return '<b>' + h(x.name) + '</b><div class="tiny muted">' + h(x.empId + ' · ' + x.designation) + '</div>'; } }, { t: 'Location', k: 'location' },
+          { t: 'Advances', cls: 'num', f: function (x) { return x.items.length; } }, { t: 'Running', cls: 'num', f: function (x) { return x.running ? '<b>' + money(x.running) + '</b>' : '—'; } },
+          { t: 'Paid', cls: 'num', f: function (x) { return x.paid ? money(x.paid) : '—'; } }, { t: 'Waiting', cls: 'num', f: function (x) { return x.waiting ? '<span style="color:var(--orange)">' + money(x.waiting) + '</span>' : '—'; } }], r.people, { click: true, max: '60vh' })
+          : '<div class="card">' + emptyHtml('payments', 'No advance in ' + r.month + '.') + '</div>');
+      $$('tr[data-row]', box).forEach(function (tr) { tr.onclick = function () {
+        var x = r.people[+tr.dataset.row];
+        modal({ title: x.name + ' · ' + money(x.running), body: '<div class="small muted mb">' + h(x.empId + ' · ' + x.designation + ' · ' + x.location + ' · ' + r.month) + '</div>' +
+          tableHtml([{ t: 'Applied', f: function (i) { return '<span class="small nowrap">' + h(i.applied) + '</span>'; } }, { t: 'Purpose', f: function (i) { return '<span class="small">' + h(i.purpose || '—') + '</span>'; } },
+            { t: 'Asked', cls: 'num', f: function (i) { return money(i.requested); } }, { t: 'Running', cls: 'num', f: function (i) { return i.approved ? '<b>' + money(i.approved) + '</b>' : '—'; } },
+            { t: 'Stage', f: function (i) { return '<span class="small">' + h(i.stage) + '</span>' + (i.paid ? ' ' + chip('Paid', 'green') : ''); } }], x.items),
+          actions: [{ label: 'Close', cls: 'ghost' }] });
+      }; });
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }).catch(function (e) { B.innerHTML = errHtml(e); });
+};
+</script>

@@ -1,0 +1,583 @@
+<script>
+/* =====================================================================
+   Password Manager · User Management · Access Control · Settings & Data
+   ===================================================================== */
+/* ---------------- PASSWORD MANAGER (admin) ---------------- */
+V.vault_admin = function (el) {
+  el.innerHTML = pageHead('Password Manager', '',
+    '<button class="btn" id="vadd">' + icon('add') + 'Add</button>') + '<input class="inp sm mb" id="vq" placeholder="Search…"><div id="vb">' + loadingHtml() + '</div>';
+  var data;
+  function load() { api('vault.all').then(function (d) { data = d; render(); }).catch(function (e) { $('#vb', el).innerHTML = errHtml(e); }); }
+  function render() {
+    var q = val('#vq', el).toLowerCase();
+    var list = data.items.filter(function (it) { return !q || (it.title + ' ' + it.category + ' ' + it.login).toLowerCase().indexOf(q) >= 0; });
+    var nameOf = {}; data.users.forEach(function (u) { nameOf[u.uid] = u.name; });
+    $('#vb', el).innerHTML = list.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Title</th><th>Type</th><th>Login</th><th>Shared with</th><th>Updated</th><th></th></tr>' + list.map(function (it, i) {
+      var sw = (it.roles.length ? it.roles.map(function (r) { return chip(r, 'violet'); }).join(' ') + ' ' : '') + it.users.map(function (u) { return chip(u === 'ALL' ? 'Everyone' : (nameOf[u] || u), 'grey'); }).join(' ');
+      return '<tr><td><div class="b">' + h(it.title) + '</div><div class="small muted">' + h(it.id) + ' · ' + h(it.category) + '</div></td><td>' + h(it.type) + (it.fileId ? ' ' + icon('attach_file') : '') + '</td>' +
+        '<td>' + h(it.login) + (it.hasPassword ? ' ••••' : '') + '</td><td>' + (sw || '<span class="muted small">Only admins</span>') + '</td><td class="nowrap">' + h(it.updated) + '</td>' +
+        '<td class="nowrap"><button class="btn sm ghost" data-e="' + h(it.id) + '">' + icon('edit') + '</button>' + (it.fileId ? '<button class="btn sm ghost" data-f="' + h(it.id) + '">' + icon('visibility') + '</button>' : '') +
+        (it.hasPassword ? '<button class="btn sm ghost" data-p="' + h(it.id) + '">' + icon('key') + '</button>' : '') + '</td></tr>';
+    }).join('') + '</table></div>' : '<div class="card">' + emptyHtml('key', 'Nothing added yet.') + '</div>';
+    $$('[data-e]', el).forEach(function (b) { b.onclick = function () { form(data.items.filter(function (x) { return x.id === b.dataset.e; })[0]); }; });
+    $$('[data-f]', el).forEach(function (b) { b.onclick = function () { viewFile('vault', b.dataset.f); }; });
+    $$('[data-p]', el).forEach(function (b) { b.onclick = function () { api('vault.reveal', { id: b.dataset.p }).then(function (c) { credModal('Login', c.login, c.password); }).catch(function (e) { toast(e.message, 'bad'); }); }; });
+  }
+  function form(it) {
+    it = it || { type: 'Credential', users: [], roles: [] };
+    var fp;
+    modal({ title: it.id ? 'Edit ' + it.title : 'Add to the password manager', wide: true, body:
+      '<div class="form-grid"><div class="field"><label>Type</label><select class="inp" id="vt">' + ['Credential', 'Document', 'Note'].map(function (t) { return '<option' + (t === it.type ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label>Category</label><input class="inp" id="vc" value="' + h(it.category || '') + '" placeholder="Bank, Govt portal, Licence, Wi-Fi…"></div>' +
+      '<div class="field full"><label>Title *</label><input class="inp" id="vti" value="' + h(it.title || '') + '"></div>' +
+      '<div class="field"><label>Login ID</label><input class="inp" id="vl" value="' + h(it.login || '') + '"></div>' +
+      '<div class="field"><label>Password ' + (it.hasPassword ? '(blank = keep current)' : '') + '</label><div class="pw"><input class="inp" type="password" id="vp"><button type="button" id="veye">' + icon('visibility') + '</button></div></div>' +
+      '<div class="field full"><label>Link</label><input class="inp" id="vu" value="' + h(it.url || '') + '" placeholder="https://"></div>' +
+      '<div class="field full"><label>Notes</label><textarea class="inp" id="vn">' + h(it.notes || '') + '</textarea></div>' +
+      '<div class="full" id="vfb"></div>' +
+      '<div class="field full mt"><label>Share with roles</label><div class="row">' + data.roles.map(function (r) { return '<label class="check small"><input type="checkbox" data-role value="' + h(r) + '"' + (it.roles.indexOf(r) >= 0 ? ' checked' : '') + '>' + h(r) + '</label>'; }).join('') + '</div></div>' +
+      '<div class="field full"><label>Share with people</label>' + userPicker(data.users, true, it.users) + '</div></div>',
+      onOpen: function (m) {
+        fp = filePicker($('#vfb', m), 'vault', { label: it.fileId ? 'Replace the document (optional)' : 'Document (for type Document)', accept: 'image/*,application/pdf,.doc,.docx,.xls,.xlsx' });
+        bindUserPicker(m);
+        $('#veye', m).onclick = function () { var p = $('#vp', m); p.type = p.type === 'password' ? 'text' : 'password'; };
+      },
+      actions: [].concat(it.id ? [{ label: 'Remove', cls: 'red', click: function (close) {
+        confirmBox('Remove?', 'Remove <b>' + h(it.title) + '</b> for everyone?', 'Remove', true).then(function (ok) { if (ok) api('vault.remove', { id: it.id }).then(function (r) { close(); toast(r.message, 'ok'); load(); }); });
+      } }] : []).concat([{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, m, btn) {
+        if (fp.busy()) return toast('Wait for the upload.');
+        var f = fp.get(); busy(btn, true);
+        api('vault.save', { id: it.id || '', type: val('#vt', m), category: val('#vc', m), title: val('#vti', m), login: val('#vl', m), password: $('#vp', m).value,
+          url: val('#vu', m), notes: val('#vn', m), fileId: f ? f.fileId : '', fileName: f ? f.name : '',
+          roles: $$('[data-role]:checked', m).map(function (x) { return x.value; }), users: picked(m) })
+          .then(function (r) { close(); toast(r.message, 'ok'); load(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }]) });
+  }
+  $('#vadd', el).onclick = function () { if (data) form(null); };
+  $('#vq', el).oninput = function () { if (data) render(); };
+  load();
+};
+
+/* ---------------- USER MANAGEMENT ---------------- */
+V.users = function (el) {
+  el.innerHTML = pageHead('User Management', '',
+    '<button class="btn ghost" id="usess">' + icon('devices') + 'Signed-in now</button><button class="btn" id="uadd">' + icon('person_add') + 'Add user</button>') +
+    '<div class="card"><div class="row"><input class="inp sm grow" id="uq" placeholder="Search name, login, employee ID…" style="min-width:180px">' +
+    '<select class="inp sm" id="ur" style="width:auto"><option value="">All roles</option></select><select class="inp sm" id="uo" style="width:auto"><option value="">All outlets</option></select>' +
+    '<select class="inp sm" id="us" style="width:auto"><option value="">Any status</option><option>Active</option><option>Inactive</option><option value="nopw">No password</option></select></div></div>' +
+    '<div id="ub" class="mt">' + loadingHtml() + '</div>';
+  var data;
+  function load() {
+    api('usr.list').then(function (d) {
+      data = d;
+      $('#ur', el).innerHTML = '<option value="">All roles</option>' + d.roles.map(function (r) { return '<option>' + h(r.name) + '</option>'; }).join('');
+      $('#uo', el).innerHTML = '<option value="">All outlets</option>' + d.outlets.map(function (o) { return '<option value="' + h(o.id) + '">' + h(o.name) + '</option>'; }).join('');
+      render();
+    }).catch(function (e) { $('#ub', el).innerHTML = errHtml(e); });
+  }
+  function render() {
+    var q = val('#uq', el).toLowerCase(), r = val('#ur', el), o = val('#uo', el), s = val('#us', el);
+    var list = data.users.filter(function (u) {
+      if (q && (u.name + ' ' + u.loginId + ' ' + u.empId + ' ' + u.uid + ' ' + u.designation).toLowerCase().indexOf(q) < 0) return false;
+      if (r && u.role !== r) return false;
+      if (o && u.home !== o && u.outletAccess.indexOf(o) < 0 && u.outletAccess !== 'ALL') return false;
+      if (s === 'nopw' && u.hasPassword) return false;
+      if (s && s !== 'nopw' && u.status !== s) return false;
+      return true;
+    });
+    $('#ub', el).innerHTML = '<div class="small muted mb">' + list.length + ' of ' + data.users.length + ' users · employee sync: ' + h(data.lastSync || 'never') + '</div>' +
+      '<div class="tbl-wrap"><table class="tbl"><tr><th>Person</th><th>Login ID</th><th>Role</th><th>Outlets</th><th>Password</th><th>Status</th><th>Last sign-in</th></tr>' +
+      list.map(function (u) {
+        return '<tr class="click" data-u="' + h(u.uid) + '"><td><div class="b">' + h(u.name) + '</div><div class="small muted">' + h(u.uid) + (u.empId ? ' · ' + h(u.empId) : '') + (u.designation ? ' · ' + h(u.designation) : '') + '</div></td>' +
+          '<td>' + h(u.loginId) + '</td><td>' + chip(u.role, 'violet') + '</td><td class="small">' + h(u.outletAccess === 'ALL' ? 'All outlets' : (u.homeName || u.outletAccess || '—')) + '</td>' +
+          '<td>' + (u.hasPassword ? chip('Set', 'green') : chip('Not set', 'red')) + '</td><td>' + statusChip(u.status) + '</td><td class="small nowrap">' + h(u.lastLogin || '—') + '</td></tr>';
+      }).join('') + '</table></div>';
+    $$('[data-u]', el).forEach(function (t) { t.onclick = function () { edit(data.users.filter(function (x) { return x.uid === t.dataset.u; })[0]); }; });
+  }
+  function edit(u) {
+    var isNew = !u;
+    u = u || { uid: '', name: '', loginId: '', email: '', mobile: '', status: 'Active', role: 'Staff', outletAccess: '', home: '', doer: '', grants: {}, empId: '' };
+    var role = data.roles.filter(function (r) { return r.name === u.role; })[0] || data.roles[data.roles.length - 1];
+    var all = u.outletAccess === 'ALL', mine = u.outletAccess && !all ? u.outletAccess.split(/\s*,\s*/) : [];
+    var groups = {}, gorder = [];
+    data.modules.forEach(function (m) { if (!groups[m.group]) { groups[m.group] = []; gorder.push(m.group); } groups[m.group].push(m); });
+    modal({ title: isNew ? 'Add user' : u.name + ' · ' + u.uid, full: true, body:
+      (isNew && data.employees.length ? '<div class="field"><label>Pick an employee (fills the details)</label><select class="inp" id="uemp"><option value="">— or type the details below —</option>' +
+        data.employees.map(function (e) { return '<option value="' + h(e.id) + '">' + h(e.name) + ' · ' + h(e.id) + ' · ' + h(e.designation) + '</option>'; }).join('') + '</select></div>' : '') +
+      '<div class="form-grid"><div class="field"><label>Full name *</label><input class="inp" id="un" value="' + h(u.name) + '"></div>' +
+      '<div class="field"><label>Employee ID</label><input class="inp" id="ue" value="' + h(u.empId) + '"></div>' +
+      '<div class="field"><label>Login ID *</label><input class="inp" id="ul" value="' + h(u.loginId) + '"></div>' +
+      '<div class="field"><label>' + (u.hasPassword ? 'New password (blank = keep)' : 'Password') + '</label><div class="pw"><input class="inp" type="password" id="upw"><button type="button" id="ueye">' + icon('visibility') + '</button></div></div>' +
+      '<div class="field"><label>Email</label><input class="inp" id="um" value="' + h(u.email) + '"></div>' +
+      '<div class="field"><label>Mobile</label><input class="inp" id="umo" value="' + h(u.mobile) + '"></div>' +
+      '<div class="field"><label>Status</label><select class="inp" id="ust"><option' + (u.status !== 'Inactive' ? ' selected' : '') + '>Active</option><option' + (u.status === 'Inactive' ? ' selected' : '') + '>Inactive</option></select></div>' +
+      '<div class="field"><label>Role</label><select class="inp" id="uro">' + data.roles.map(function (r) { return '<option' + (r.name === u.role ? ' selected' : '') + '>' + h(r.name) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field full"><label>Outlet access</label><div class="row"><label class="check small"><input type="checkbox" id="uall"' + (all ? ' checked' : '') + '> <b>All outlets</b></label>' +
+      data.outlets.map(function (o) { return '<label class="check small"><input type="checkbox" data-out value="' + h(o.id) + '"' + (mine.indexOf(o.id) >= 0 ? ' checked' : '') + '>' + h(o.name) + '</label>'; }).join('') + '</div></div>' +
+      '<div class="field"><label>Home outlet</label><select class="inp" id="uh"><option value="">—</option>' + data.outlets.map(function (o) { return '<option value="' + h(o.id) + '"' + (o.id === u.home ? ' selected' : '') + '>' + h(o.name) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label>Checklist doer name(s)</label><input class="inp" id="ud" value="' + h(u.doer) + '" placeholder="Name as in the checklist, e.g. Umesh, umesh@chaigovindam.com"></div></div>' +
+      '<div class="section-title">Sections <span class="muted" style="text-transform:none;font-weight:500">— Default = what the role gives</span></div><div id="ugr"></div>' +
+      (isNew ? '' : '<div class="row mt"><button class="btn sm ghost" id="uend">' + icon('logout') + 'Sign out of every device</button></div>'),
+      onOpen: function (m) {
+        $('#ueye', m).onclick = function () { var p = $('#upw', m); p.type = p.type === 'password' ? 'text' : 'password'; };
+        var grants = JSON.parse(JSON.stringify(u.grants || {}));
+        function drawGrants() {
+          role = data.roles.filter(function (r) { return r.name === val('#uro', m); })[0] || role;
+          $('#ugr', m).innerHTML = gorder.map(function (g) {
+            return '<div class="small b muted" style="margin:10px 0 6px">' + h(g) + '</div><div class="grid g2" style="gap:8px">' + groups[g].map(function (md) {
+              var v = grants[md.key] || '', def = role.grants[md.key] === 'Yes';
+              return '<div class="row" style="border:1px solid var(--line);border-radius:10px;padding:7px 10px"><div class="grow"><div class="b small">' + h(md.name) + (md.status !== 'Active' ? ' <span class="chip grey">' + h(md.status) + '</span>' : '') + '</div>' +
+                '<div class="tiny muted">Role default: ' + (def ? 'Yes' : 'No') + ' → <b style="color:' + ((v === 'Yes' || (!v && def)) ? 'var(--green)' : 'var(--red)') + '">' + ((v === 'Yes' || (!v && def)) ? 'can open' : 'hidden') + '</b></div></div>' +
+                '<div class="seg" data-g="' + md.key + '"><button data-v="" class="' + (!v ? 'on' : '') + '">Default</button><button data-v="Yes" class="yes ' + (v === 'Yes' ? 'on' : '') + '">Yes</button><button data-v="No" class="no ' + (v === 'No' ? 'on' : '') + '">No</button></div></div>';
+            }).join('') + '</div>';
+          }).join('');
+          $$('[data-g]', m).forEach(function (sg) { $$('button', sg).forEach(function (bt) { bt.onclick = function () { grants[sg.dataset.g] = bt.dataset.v; drawGrants(); }; }); });
+        }
+        drawGrants();
+        $('#uro', m).onchange = drawGrants;
+        m._grants = function () { return grants; };
+        var ueSel = $('#uemp', m);
+        if (ueSel) ueSel.onchange = function () {
+          var e = data.employees.filter(function (x) { return x.id === ueSel.value; })[0]; if (!e) return;
+          $('#un', m).value = e.name; $('#ue', m).value = e.id; $('#ul', m).value = e.id; $('#um', m).value = e.email || ''; $('#umo', m).value = e.phone || '';
+          if (e.outletId) { $('#uh', m).value = e.outletId; $$('[data-out]', m).forEach(function (c) { c.checked = c.value === e.outletId; }); }
+        };
+        var endBtn = $('#uend', m);
+        if (endBtn) endBtn.onclick = function () { api('usr.endSessions', { uid: u.uid }).then(function (r) { toast(r.message, 'ok'); }).catch(function (e) { toast(e.message, 'bad'); }); };
+      },
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, m, btn) {
+        busy(btn, true);
+        api('usr.save', { uid: u.uid, name: val('#un', m), empId: val('#ue', m), loginId: val('#ul', m), password: $('#upw', m).value, email: val('#um', m), mobile: val('#umo', m),
+          status: val('#ust', m), role: val('#uro', m), outletAccess: $('#uall', m).checked ? 'ALL' : $$('[data-out]:checked', m).map(function (c) { return c.value; }),
+          home: val('#uh', m), doer: val('#ud', m), grants: m._grants() })
+          .then(function (r) { close(); toast(r.message, 'ok'); load(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+  function sessions() {
+    var m = modal({ title: 'Signed in now', wide: true, body: loadingHtml() });
+    api('usr.sessions', {}).then(function (d) {
+      $('.modal-b', m.el).innerHTML = d.sessions.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Person</th><th>Since</th><th>Last seen</th><th>Until</th><th>Remember</th><th></th></tr>' +
+        d.sessions.map(function (s) { return '<tr><td>' + h(s.name) + '<div class="tiny muted">' + h(s.device.substring(0, 60)) + '</div></td><td class="small">' + h(s.created) + '</td><td class="small">' + h(s.lastSeen) + '</td><td class="small">' + h(s.expires) + '</td><td>' + h(s.remember) + '</td><td><button class="btn sm ghost" data-end="' + h(s.uid) + '">End</button></td></tr>'; }).join('') + '</table></div>' : emptyHtml('devices', 'Nobody is signed in.');
+      $$('[data-end]', m.el).forEach(function (b) { b.onclick = function () { api('usr.endSessions', { uid: b.dataset.end }).then(function (r) { toast(r.message, 'ok'); m.close(); sessions(); }); }; });
+    }).catch(function (e) { $('.modal-b', m.el).innerHTML = errHtml(e); });
+  }
+  $('#uadd', el).onclick = function () { if (data) edit(null); };
+  $('#usess', el).onclick = sessions;
+  ['#uq', '#ur', '#uo', '#us'].forEach(function (s) { $(s, el)[s === '#uq' ? 'oninput' : 'onchange'] = function () { if (data) render(); }; });
+  load();
+};
+
+/* ---------------- SETTINGS & DATA ---------------- */
+V.settings = function (el, p) {
+  var tab = p.tab || 'tools';
+  el.innerHTML = pageHead('Settings & Data', '') +
+    tabsHtml([['tools', 'Tools'], ['settings', 'Settings'], ['outlets', 'Outlets'], ['apps', 'Apps & links'], ['chk', 'Checklists'], ['mm', 'Mismatches']], tab) + '<div id="sb"></div>';
+  bindTabs(el, function (t) { tab = t; show(); });
+  function show() {
+    var b = $('#sb', el); b.innerHTML = loadingHtml();
+    if (tab === 'tools') api('set.get').then(function (d) {
+      var i = d.info;
+      b.innerHTML = '<div class="grid g2"><div class="card"><h3>Run</h3><div class="list">' +
+        [['sync', 'sync', 'Sync employees', 'Reads CG Employee Master → one sheet per location, creates missing logins (password blank), switches off people moved to Ex-Employees. Runs daily at 5 AM too.'],
+         ['doers', 'checklist', 'Sync checklist doers', 'Reads every checklist\'s Doer List and links each doer to a login — that is who sees which checklist.'],
+         ['sysmaster', 'hub', 'Import CG System Master V2', 'Brings every link of the System Master into My Apps (department · section), without duplicates.'],
+         ['lasync', 'sync_alt', 'Outlet incharges → Loan & Advance', 'Writes every Outlet Incharge into the old form\'s Admin Access tab, so its requests route to them too.'],
+         ['laclose', 'block', 'Close the old Loan & Advance form', 'The old public form lists every employee and lets anyone apply for anyone. Closed, it only shows "Apply in CG One Login" with this app\'s link (needs its v3.1). The approvers\' old portal keeps working.'],
+         ['laopen', 'lock_open', 'Open the old form again', 'Undo the above.'],
+         ['creds', 'key', 'Import app credentials', 'Collects the logins every older app keeps into App Credentials and links checklist doer names.'],
+         ['poster', 'campaign', 'Fill the poster tabs', 'Copies outlets, roles, benefits and sections from the old Poster Generation sheet (only into empty tabs).'],
+         ['attcfg', 'tune', 'Check the attendance workbook', 'Adds any Config key the attendance engine needs and the Manual Penalty / Employee Shift tabs.'],
+         ['audit', 'rule', 'Run mismatch audit', 'Checks outlets, logins, checklists, DSR tabs, app links — adds findings to Mismatches.'],
+         ['setup', 'build', 'Repair every tab', 'Adds missing tabs / columns / dropdowns. Never deletes data.'],
+         ['cache', 'cached', 'Clear cache', 'After editing tabs by hand.']].map(function (x) {
+          return '<div class="li"><div class="top">' + icon(x[1]) + '<div class="grow"><div class="title">' + x[2] + '</div><div class="small muted">' + x[3] + '</div></div><button class="btn sm" data-job="' + x[0] + '">Run</button></div></div>';
+        }).join('') + '</div></div>' +
+        '<div class="card"><h3>This installation</h3><div class="kv"><b>Version</b><span>' + h(i.version) + '</span><b>Link to share</b><span>' +
+        (i.webApp ? '<button class="btn sm ghost" id="lcopy">' + icon('content_copy') + 'Copy link</button> <a href="' + h(i.webApp) + '" target="_blank">open</a>' +
+          '<div class="tiny muted" style="word-break:break-all;margin-top:4px">' + h(i.webApp) + '</div><div class="tiny muted">This form opens on phones signed in to several Google accounts.</div>' : 'open the app once from its link') + '</span>' +
+        '<b>Spreadsheet</b><span><a href="' + h(i.sheet) + '" target="_blank">open</a></span><b>Employees</b><span>' + i.employees + ' (sync ' + h(i.lastSync || 'never') + ')</span>' +
+        '<b>Logins</b><span>' + i.counts['Login'] + ' · <b style="color:var(--red)">' + i.noPassword + ' without password</b></span><b>Apps</b><span>' + i.counts['Apps'] + '</span>' +
+        '<b>Credentials</b><span>' + i.counts['App Credentials'] + '</span><b>Vault items</b><span>' + i.counts['Vault'] + '</span><b>Checklists</b><span>' + i.counts['Checklists'] + '</span>' +
+        '<b>Access rules</b><span>' + (i.counts['Access Rules'] || 0) + '</span><b>Checklist doers</b><span>' + (i.counts['Checklist Doers'] || 0) + ' (sync ' + h(i.lastDoerSync || 'never') + ')</span>' +
+        '<b>Joining form</b><span>' + (i.joinUrl ? '<button class="btn sm ghost" id="jcopy">' + icon('content_copy') + 'Copy link</button>' : 'deploy first') + '</span>' +
+        '<b>Mismatches</b><span>' + i.counts['Mismatches'] + '</span><b>SSO secret</b><span><button class="btn sm ghost" id="sso">' + icon('content_copy') + 'Copy</button> <span class="tiny muted">paste into other apps\' Script Properties as CG_SSO_SECRET</span></span></div></div></div>';
+      $('#sso', b).onclick = function () { copyText(i.ssoSecret); };
+      if ($('#lcopy', b)) $('#lcopy', b).onclick = function () { copyText(i.webApp); };
+      if ($('#jcopy', b)) $('#jcopy', b).onclick = function () { copyText(i.joinUrl); };
+      $$('[data-job]', b).forEach(function (x) {
+        x.onclick = function () {
+          busy(x, true, 'Running…');
+          api('set.run', { job: x.dataset.job }).then(function (r) { busy(x, false); toast(r.message, 'ok'); S.cache = {}; try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('cg1_b_') === 0 && x.dataset.job === 'cache') localStorage.removeItem(k); }); } catch (e) {} }).catch(function (e) { busy(x, false); toast(e.message, 'bad'); });
+        };
+      });
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+    else if (tab === 'settings') api('set.get').then(function (d) {
+      b.innerHTML = '<div class="card">' + d.rows.map(function (r) {
+        if (r.group) return '<div class="section-title">' + h(r.group) + '</div>';
+        var yn = /^(yes|no)$/i.test(r.value) && r.key !== 'Setup Version';
+        return '<div class="form-grid" style="align-items:center;border-bottom:1px solid #F3EADF;padding:6px 0"><div><div class="b small">' + h(r.key) + '</div><div class="tiny muted">' + h(r.notes) + '</div></div>' +
+          (yn ? '<select class="inp sm" data-k="' + h(r.key) + '"><option' + (/yes/i.test(r.value) ? ' selected' : '') + '>Yes</option><option' + (/no/i.test(r.value) ? ' selected' : '') + '>No</option></select>'
+            : '<input class="inp sm" data-k="' + h(r.key) + '" value="' + h(r.value) + '"' + (r.key === 'Setup Version' || r.key === 'Last Employee Sync' ? ' disabled' : '') + '>') + '</div>';
+      }).join('') + '<div class="row mt"><span class="grow"></span><button class="btn green" id="ssave">' + icon('save') + 'Save settings</button></div></div>';
+      $('#ssave', b).onclick = function () {
+        var vals = {}; $$('[data-k]', b).forEach(function (x) { if (!x.disabled) vals[x.dataset.k] = x.value; });
+        var btn = this; busy(btn, true);
+        api('set.save', { values: vals }).then(function (r) { busy(btn, false); toast(r.message, 'ok'); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      };
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+    else if (tab === 'apps') settingsApps(b);
+    else if (tab === 'outlets') settingsOutlets(b);
+    else if (tab === 'chk') settingsChecklists(b);
+    else api('set.mismatches').then(function (d) {
+      b.innerHTML = d.rows.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>ID</th><th>Area</th><th>Issue</th><th>Detail</th><th>Suggested fix</th><th>Status</th></tr>' +
+        d.rows.map(function (r) { return '<tr><td class="nowrap small">' + h(r.id) + '<div class="tiny muted">' + h(r.by) + ' · ' + h(r.at) + '</div></td><td>' + chip(r.area, 'grey') + '</td><td class="b">' + h(r.issue) + '</td><td class="small">' + h(r.detail) + '</td><td class="small">' + h(r.fix) + '</td><td>' + statusChip(r.status) + '</td></tr>'; }).join('') +
+        '</table></div><div class="small muted mt">Mark a row Fixed / Ignore on the Mismatches tab of the sheet.</div>' : emptyHtml('rule', 'No mismatch recorded.');
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  show();
+};
+
+/* Outlets: type and model. COCO / FOCO (Settings ▸ Operated Models) = run by us → attendance, penalties, salary, checklists. */
+var MODEL_TEXT = { COCO: 'company owned · company run', FOCO: 'franchise owned · company run', FOFO: 'franchise owned · franchise run', COFO: 'company owned · franchise run' };
+function settingsOutlets(b) {
+  b.innerHTML = loadingHtml();
+  api('set.outlets').then(function (d) {
+    var run = d.run.slice();
+    b.innerHTML = ''+
+      '<div class="card mb"><div class="row" style="gap:12px;flex-wrap:wrap;align-items:center"><span class="b">Models we run</span>' +
+      d.models.map(function (m) { return '<label class="check"><input type="checkbox" data-m="' + h(m) + '"' + (run.indexOf(m) >= 0 ? ' checked' : '') + '> <b>' + h(m) + '</b> <span class="tiny muted">' + h(MODEL_TEXT[m] || '') + '</span></label>'; }).join('') +
+      '<span class="grow"></span><button class="btn sm" id="omsave">' + icon('save') + 'Save</button></div></div>' +
+      '<div class="tbl-wrap"><table class="tbl"><tr><th>Outlet</th><th>Type</th><th>Model</th><th class="num">Staff</th><th>Attendance · salary · checklists</th><th>Status</th><th></th></tr>' +
+      d.rows.map(function (o, i) {
+        return '<tr data-i="' + i + '"><td><b>' + h(o.name) + '</b><div class="tiny muted">' + h(o.id + ' · ' + (o.code || '') + (o.location ? ' · ' + o.location : '')) + '</div></td>' +
+          '<td><select class="inp sm" data-f="type" style="width:auto">' + ['Outlet', 'Head Office', 'Factory', 'Warehouse'].map(function (t) { return '<option' + (t === o.type ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></td>' +
+          '<td><select class="inp sm" data-f="model" style="width:auto"><option value="">—</option>' + d.models.map(function (m) { return '<option' + (m === o.model ? ' selected' : '') + '>' + m + '</option>'; }).join('') + '</select></td>' +
+          '<td class="num">' + o.staff + '</td>' +
+          '<td>' + (o.run ? chip(o.type === 'Outlet' ? 'Run by us' : 'Head Office', 'green') : chip('Franchise run — records only', 'grey')) + '</td>' +
+          '<td><select class="inp sm" data-f="status" style="width:auto"><option' + (o.status === 'Active' ? ' selected' : '') + '>Active</option><option' + (o.status !== 'Active' ? ' selected' : '') + '>Inactive</option></select></td>' +
+          '<td><button class="btn sm ghost" data-save="' + i + '">' + icon('save') + 'Save</button></td></tr>';
+      }).join('') + '</table></div>';
+    $$('[data-save]', b).forEach(function (x) {
+      x.onclick = function () {
+        var tr = x.closest('tr'), o = d.rows[+x.dataset.save];
+        busy(x, true);
+        api('set.outletSave', { id: o.id, type: val('[data-f=type]', tr), model: val('[data-f=model]', tr), status: val('[data-f=status]', tr) })
+          .then(function (r) { toast(r.message, 'ok'); S.cache = {}; settingsOutlets(b); })
+          .catch(function (e) { busy(x, false); toast(e.message, 'bad'); });
+      };
+    });
+    $('#omsave', b).onclick = function () {
+      var pick = $$('[data-m]', b).filter(function (c) { return c.checked; }).map(function (c) { return c.dataset.m; });
+      if (!pick.length) { toast('Tick at least one model.', 'bad'); return; }
+      var btn = this; busy(btn, true);
+      api('set.save', { values: { 'Operated Models': pick.join(', ') } })
+        .then(function () { toast('Models we run: ' + pick.join(', '), 'ok'); S.cache = {}; settingsOutlets(b); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+  }).catch(function (e) { b.innerHTML = errHtml(e); });
+}
+
+function settingsApps(b) {
+  api('set.apps').then(function (d) {
+    b.innerHTML = '<div class="row mb"><input class="inp sm grow" id="aq" placeholder="Search apps…"><button class="btn" id="anew">' + icon('add') + 'Add app / link</button></div><div id="al"></div>';
+    function render() {
+      var q = val('#aq', b).toLowerCase();
+      var list = d.apps.filter(function (a) { return !q || (a.name + ' ' + a.dept + ' ' + a.section + ' ' + a.company + ' ' + a.url).toLowerCase().indexOf(q) >= 0; });
+      $('#al', b).innerHTML = '<div class="small muted mb">' + list.length + ' of ' + d.apps.length + ' · apps marked <b>Inside</b> open inside One Login; the rest open their own link. Finer rules (block one person, one designation …) are in Access Control.</div>' +
+        '<div class="tbl-wrap"><table class="tbl"><tr><th>App</th><th>Type</th><th>Visible to</th><th>Logins</th><th>Status</th></tr>' + list.map(function (a) {
+        var vis = (a.all ? chip('Everyone', 'green') + ' ' : '') + a.roles.map(function (r) { return chip(r, 'violet'); }).join(' ') + ' ' + a.depts.map(function (r) { return chip(r, 'blue'); }).join(' ') + ' ' +
+          a.desigs.map(function (r) { return chip(r, 'orange'); }).join(' ') + ' ' + a.locs.map(function (r) { var l = d.locs.filter(function (x) { return x.id === r; })[0]; return chip(l ? l.name : r, 'grey'); }).join(' ') +
+          (a.users.length ? ' +' + a.users.length + ' people' : '');
+        var none = !a.all && !a.roles.length && !a.users.length && !a.depts.length && !a.desigs.length && !a.locs.length;
+        return '<tr class="click" data-a="' + h(a.id) + '"><td><div class="b">' + h(a.name) + (a.inside ? ' ' + chip('Inside', 'green') : '') + '</div><div class="small muted">' + h(a.id) + ' · ' + h([a.company, a.dept, a.section].filter(Boolean).join(' · ')) + '</div></td>' +
+          '<td>' + h(a.type) + (a.sso ? ' ' + chip('SSO', 'blue') : '') + '</td><td class="small wrap">' + (none ? '<span class="muted">Admins only</span>' : vis) + '</td>' +
+          '<td>' + (a.creds || '—') + '</td><td>' + statusChip(a.status) + (a.source && /system master/i.test(a.source) ? '<div class="tiny muted">System Master</div>' : '') + '</td></tr>';
+      }).join('') + '</table></div>';
+      $$('[data-a]', b).forEach(function (t) { t.onclick = function () { form(d.apps.filter(function (x) { return x.id === t.dataset.a; })[0]); }; });
+    }
+    function form(a) {
+      a = a || { roles: [], users: [], depts: [], desigs: [], locs: [], all: false, sso: false, status: 'Active', type: 'App Link' };
+      function checks(list, cur, attr) {
+        return '<div class="msel" style="max-height:170px">' + list.map(function (x) { var id = typeof x === 'string' ? x : x.id, nm = typeof x === 'string' ? x : x.name;
+          return '<label><input type="checkbox" ' + attr + ' value="' + h(id) + '"' + (cur.indexOf(id) >= 0 ? ' checked' : '') + '>' + h(nm) + '</label>'; }).join('') + '</div>';
+      }
+      var types = ['App Link', 'Google Sheet', 'Google Form', 'Checklist', 'FMS', 'PMS', 'Flowchart / Docs', 'Training Video', 'Template', 'Other'];
+      modal({ title: a.id ? a.name : 'Add app / link', wide: true, body: '<div class="form-grid"><div class="field full"><label>Name *</label><input class="inp" id="fn" value="' + h(a.name || '') + '"></div>' +
+        '<div class="field full"><label>Link *</label><input class="inp" id="fu" value="' + h(a.url || '') + '" placeholder="https://script.google.com/macros/s/…/exec"></div>' +
+        '<div class="field"><label>Type</label><select class="inp" id="ft">' + types.map(function (t) { return '<option' + (t === a.type ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label>Department</label><input class="inp" id="fd" value="' + h(a.dept || '') + '"></div>' +
+        '<div class="field"><label>Company</label><input class="inp" id="fc" value="' + h(a.company || '') + '"></div>' +
+        '<div class="field"><label>Section</label><input class="inp" id="fs" value="' + h(a.section || '') + '"></div>' +
+        '<div class="field"><label>Status</label><select class="inp" id="fst">' + ['Active', 'Inactive', 'Needs URL'].map(function (t) { return '<option' + (t === a.status ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label>Single sign-on</label><label class="check"><input type="checkbox" id="fsso"' + (a.sso ? ' checked' : '') + '> Pass a sign-on ticket (the app must have the SSO snippet)</label></div>' +
+        '<div class="field full"><label class="check"><input type="checkbox" id="fall"' + (a.all ? ' checked' : '') + '> <b>Visible to everyone</b></label></div>' +
+        '<div class="field full"><label>Description</label><input class="inp" id="fde" value="' + h(a.desc || '') + '" placeholder="One line — what the app is for"></div>' +
+        '<div class="field full"><label>Visible to roles</label><div class="row">' + d.roles.map(function (r) { return '<label class="check small"><input type="checkbox" data-role value="' + h(r) + '"' + (a.roles.indexOf(r) >= 0 ? ' checked' : '') + '>' + h(r) + '</label>'; }).join('') + '</div></div>' +
+        '<div class="field"><label>Visible to departments</label>' + checks(d.depts, a.depts, 'data-dep') + '</div>' +
+        '<div class="field"><label>Visible to designations</label>' + checks(d.desigs, a.desigs, 'data-des') + '</div>' +
+        '<div class="field"><label>Visible to locations</label>' + checks(d.locs, a.locs, 'data-loc') + '</div>' +
+        '<div class="field"><label>Visible to people</label>' + userPicker(d.users, true, a.users) + '</div></div>' +
+        (a.inside ? '<div class="okbox">' + icon('verified') + ' This link opens <b>inside One Login</b> (' + h(a.inside) + ') for everyone who can open that section.</div>' : ''),
+        onOpen: function (m) { bindUserPicker(m); },
+        actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, m, btn) {
+          busy(btn, true);
+          api('set.appSave', { id: a.id || '', name: val('#fn', m), url: val('#fu', m), type: val('#ft', m), dept: val('#fd', m), company: val('#fc', m), section: val('#fs', m),
+            status: val('#fst', m), sso: $('#fsso', m).checked, all: $('#fall', m).checked, roles: $$('[data-role]:checked', m).map(function (x) { return x.value; }), users: picked(m),
+            depts: $$('[data-dep]:checked', m).map(function (x) { return x.value; }), desigs: $$('[data-des]:checked', m).map(function (x) { return x.value; }),
+            locs: $$('[data-loc]:checked', m).map(function (x) { return x.value; }), desc: val('#fde', m), sort: a.sort || '' })
+            .then(function (r) { close(); toast(r.message, 'ok'); settingsApps(b); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+        } }] });
+    }
+    $('#anew', b).onclick = function () { form(null); };
+    $('#aq', b).oninput = render;
+    render();
+  }).catch(function (e) { b.innerHTML = errHtml(e); });
+}
+
+function settingsChecklists(b) {
+  api('set.checklists').then(function (d) {
+    var nameOf = {}; d.users.forEach(function (u) { nameOf[u.uid] = u.name; });
+    b.innerHTML = '<div class="pill-note mb">Managers see every doer\'s tasks and can give tasks to anyone. Leave "Managers" empty to let every Outlet Incharge of that outlet manage it.</div>' +
+      '<div class="row mb"><span class="grow"></span><button class="btn" id="cnew">' + icon('add') + 'Add checklist</button></div>' +
+      '<div class="tbl-wrap"><table class="tbl"><tr><th>Checklist</th><th>Outlet</th><th>Department</th><th>Managers</th><th>Status</th></tr>' + d.rows.map(function (c) {
+        var o = d.outlets.filter(function (x) { return x.id === c.outletId; })[0];
+        return '<tr class="click" data-c="' + h(c.id) + '"><td><div class="b">' + h(c.name) + '</div><div class="small muted">' + h(c.id) + ' · tab ' + h(c.tab) + '</div></td><td>' + h(o ? o.name : 'All') + '</td><td>' + h(c.dept) + '</td>' +
+          '<td class="small">' + (c.assigned.length ? c.assigned.map(function (u) { return h(nameOf[u] || u); }).join(', ') : '<span class="muted">Outlet incharges</span>') + '</td><td>' + statusChip(c.status) + '</td></tr>';
+      }).join('') + '</table></div>';
+    function form(c) {
+      c = c || { tab: 'Master', assigned: [], status: 'Active' };
+      modal({ title: c.id ? c.name : 'Add checklist', wide: true, body: '<div class="form-grid"><div class="field full"><label>Name *</label><input class="inp" id="kn" value="' + h(c.name || '') + '"></div>' +
+        '<div class="field full"><label>Spreadsheet link or ID *</label><input class="inp" id="ks" value="' + h(c.ssId || '') + '"></div>' +
+        '<div class="field"><label>Tab</label><input class="inp" id="kt" value="' + h(c.tab || 'Master') + '"></div>' +
+        '<div class="field"><label>Outlet</label><select class="inp" id="ko"><option value="">All / none</option>' + d.outlets.map(function (o) { return '<option value="' + h(o.id) + '"' + (o.id === c.outletId ? ' selected' : '') + '>' + h(o.name) + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label>Department</label><input class="inp" id="kd" value="' + h(c.dept || '') + '"></div>' +
+        '<div class="field"><label>Status</label><select class="inp" id="kst"><option' + (c.status !== 'Inactive' ? ' selected' : '') + '>Active</option><option' + (c.status === 'Inactive' ? ' selected' : '') + '>Inactive</option></select></div>' +
+        '<div class="field full"><label>Checklist web app link</label><input class="inp" id="ku" value="' + h(c.url || '') + '"></div>' +
+        '<div class="field full"><label>Managers</label>' + userPicker(d.users, true, c.assigned) + '</div></div>',
+        onOpen: function (m) { bindUserPicker(m); },
+        actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, m, btn) {
+          busy(btn, true);
+          api('set.checklistSave', { id: c.id || '', name: val('#kn', m), ssId: val('#ks', m), tab: val('#kt', m), outletId: val('#ko', m), dept: val('#kd', m), status: val('#kst', m), url: val('#ku', m), assigned: picked(m) })
+            .then(function (r) { close(); toast(r.message, 'ok'); settingsChecklists(b); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+        } }] });
+    }
+    $('#cnew', b).onclick = function () { form(null); };
+    $$('[data-c]', b).forEach(function (t) { t.onclick = function () { form(d.rows.filter(function (x) { return x.id === t.dataset.c; })[0]); }; });
+  }).catch(function (e) { b.innerHTML = errHtml(e); });
+}
+
+/* ---------------- ACCESS CONTROL ---------------- */
+var ACC_WHO = ['Everyone', 'Location', 'Department', 'Designation', 'Role', 'User'];
+var ACC_WHO_HELP = { Everyone: 'Everyone who can sign in', Location: 'Everyone at an outlet, every outlet, or the Head Office', Department: 'Everyone in a department',
+  Designation: 'Everyone with a designation', Role: 'Everyone with a login role', User: 'One or more people' };
+V.access = function (el, p) {
+  var tab = p.tab || 'item', M = null;
+  el.innerHTML = pageHead('Access Control', '',
+    '<button class="btn" id="arule">' + icon('add') + 'Add a rule</button>') +
+    tabsHtml([['item', 'By item'], ['person', 'By person'], ['rules', 'All rules'], ['doers', 'Checklist doers'], ['chk', 'Checklists'], ['apps', 'Apps & links']], tab) + '<div id="axb"></div>';
+  bindTabs(el, function (t) { tab = t; show(); });
+  $('#arule', el).onclick = function () { meta().then(function () { ruleModal({}); }); };
+  function meta(fresh) { if (fresh) delete S.cache.accMeta; return cached('accMeta', function () { return api('acc.meta'); }).then(function (m) { M = m; return m; }); }
+  function show() {
+    var b = $('#axb', el); b.innerHTML = loadingHtml();
+    if (tab === 'chk') return settingsChecklists(b);
+    if (tab === 'apps') return settingsApps(b);
+    if (tab === 'doers') return doersTab(b);
+    meta().then(function () { if (tab === 'person') personTab(b); else if (tab === 'rules') rulesTab(b); else itemTab(b, p.type || 'Section', p.id || ''); })
+      .catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  function itemName(type, id) { var it = (M.items[type] || []).filter(function (x) { return x.id === id; })[0]; return it ? it.name : id; }
+  function accChip(a) { return chip(a === 'No' ? 'No — blocked' : a === 'Manage' ? 'Manage' : 'Yes', a === 'No' ? 'red' : a === 'Manage' ? 'violet' : 'green'); }
+
+  /* ---------- by item ---------- */
+  function itemTab(b, type, cur) {
+    b.innerHTML = '<div class="grid" style="grid-template-columns:minmax(240px,340px) 1fr;align-items:start"><div class="card"><div class="seg mb" data-it>' + ['Section', 'Checklist', 'App'].map(function (t) {
+      return '<button data-v="' + t + '" class="' + (t === type ? 'on' : '') + '">' + t + 's</button>'; }).join('') + '</div>' +
+      '<input class="inp sm mb" data-q placeholder="Search…"><div class="msel" data-l style="max-height:62vh"></div></div><div data-d>' +
+      '<div class="card">' + emptyHtml('touch_app', 'Pick a ' + type.toLowerCase() + ' to see who can open it.') + '</div></div></div>';
+    if (window.innerWidth < 800) $('.grid', b).style.gridTemplateColumns = '1fr';
+    function list() {
+      var q = val('[data-q]', b).toLowerCase(), g = '';
+      $('[data-l]', b).innerHTML = (M.items[type] || []).filter(function (x) { return !q || (x.name + ' ' + x.id + ' ' + (x.group || '')).toLowerCase().indexOf(q) >= 0; }).map(function (x) {
+        var head = x.group !== g ? '<div class="tiny b muted" style="padding:8px 10px 2px;text-transform:uppercase">' + h(g = x.group || '') + '</div>' : '';
+        return head + '<label data-id="' + h(x.id) + '" style="' + (x.id === cur ? 'background:var(--cream)' : '') + '"><span class="grow">' + h(x.name) + (x.hidden ? ' <span class="chip mini grey">permission</span>' : '') + '</span><span class="tiny muted">' + h(x.id) + '</span></label>';
+      }).join('') || '<div class="empty">Nothing matches.</div>';
+      $$('[data-id]', b).forEach(function (l) { l.onclick = function () { cur = l.dataset.id; list(); detail(); }; });
+    }
+    function detail() {
+      var d = $('[data-d]', b); d.innerHTML = '<div class="card">' + loadingHtml() + '</div>';
+      api('acc.who', { type: type, id: cur }).then(function (r) {
+        d.innerHTML = '<div class="card"><div class="row"><div class="grow"><h3 style="margin:0">' + h(itemName(type, cur)) + '</h3><div class="small muted">' + h(type + ' · ' + cur) + '</div></div>' +
+          '<button class="btn sm" data-add>' + icon('add') + 'Rule for this ' + type.toLowerCase() + '</button></div>' +
+          '<div class="section-title">Rules (' + r.rules.length + ')</div>' + (r.rules.length ? r.rules.map(function (x) {
+            return '<div class="row" style="padding:6px 0;border-bottom:1px solid #F3EADF"><span class="grow">' + chip(x.whoType, 'grey') + ' <b>' + h(x.whoName || x.who) + '</b>' + (x.notes ? ' <span class="small muted">· ' + h(x.notes) + '</span>' : '') + '</span>' + accChip(x.access) +
+              '<button class="icon-btn" data-rm="' + h(x.id) + '" title="Remove rule">' + icon('delete') + '</button></div>';
+          }).join('') : '<div class="small muted">No rule — ' + (type === 'Section' ? 'each person\'s role decides.' : type === 'App' ? 'the app row\'s "Visible to" decides.' : 'the managers and the Doer List decide.') + '</div>') +
+          '<div class="section-title">Who can open it (' + r.people.length + ')</div>' + (r.people.length ? tableHtml([
+            { t: 'Person', f: function (x) { return '<b>' + h(x.name) + '</b><div class="tiny muted">' + h([x.designation, x.outlet].filter(Boolean).join(' · ')) + '</div>'; } },
+            { t: 'Role', f: function (x) { return chip(x.role, 'violet'); } }, { t: 'Access', f: function (x) { return accChip(x.access); } },
+            { t: 'Because', f: function (x) { return '<span class="small muted">' + h(x.source) + '</span>'; } }], r.people, { max: '50vh' }) : emptyHtml('lock', 'Nobody can open it.')) + '</div>';
+        $('[data-add]', d).onclick = function () { ruleModal({ type: type, items: [cur] }, detail); };
+        $$('[data-rm]', d).forEach(function (x) { x.onclick = function () { removeRules([x.dataset.rm], detail); }; });
+      }).catch(function (e) { d.innerHTML = errHtml(e); });
+    }
+    $$('[data-it] button', b).forEach(function (x) { x.onclick = function () { itemTab(b, x.dataset.v, ''); }; });
+    $('[data-q]', b).oninput = debounce(list, 120);
+    list(); if (cur) detail();
+  }
+
+  /* ---------- by person ---------- */
+  function personTab(b) {
+    b.innerHTML = '<div class="card"><div class="filters"><input class="inp sm" data-q placeholder="Type a name…" list="accUsers" style="flex:1;min-width:220px">' +
+      '<datalist id="accUsers">' + M.who.User.map(function (u) { return '<option value="' + h(u.name + ' · ' + u.id) + '">' + h(u.sub || '') + '</option>'; }).join('') + '</datalist>' +
+      '<button class="btn sm" data-go>' + icon('search') + 'Show</button></div></div><div data-p class="mt"></div>';
+    function go() {
+      var v = val('[data-q]', b), uid = (v.match(/·\s*(\S+)$/) || [])[1] || (M.who.User.filter(function (u) { return u.name.toLowerCase() === v.toLowerCase(); })[0] || {}).id;
+      if (!uid) return toast('Pick a person from the list.', 'bad');
+      var x = $('[data-p]', b); x.innerHTML = loadingHtml();
+      api('acc.person', { uid: uid }).then(function (r) {
+        var groups = {}, order = [];
+        r.sections.forEach(function (s0) { if (!groups[s0.group]) { groups[s0.group] = []; order.push(s0.group); } groups[s0.group].push(s0); });
+        x.innerHTML = '<div class="card"><div class="profile-head"><div class="avatar lg">' + h(initials(r.name)) + '</div><div class="grow"><h3 style="margin:0">' + h(r.name) + '</h3>' +
+          '<div class="small muted">' + h([r.designation, r.department, r.outlet].filter(Boolean).join(' · ')) + '</div><div class="row gap6 mt" style="margin-top:6px">' + chip(r.role, 'violet') +
+          (r.outlets.length ? chip('Outlets: ' + r.outlets.join(', '), 'grey') : chip('No outlet', 'grey')) + '</div></div>' +
+          '<button class="btn sm" data-add>' + icon('add') + 'Rule for ' + h(r.name.split(' ')[0]) + '</button></div></div>' +
+          '<div class="grid g2 mt"><div class="card"><h3>' + icon('menu') + ' Sections</h3>' + order.map(function (g) {
+            return '<div class="tiny b muted" style="margin:10px 0 4px;text-transform:uppercase">' + h(g) + '</div>' + groups[g].map(function (s0) {
+              return '<div class="row" style="padding:3px 0"><span class="grow small">' + (s0.on ? '<b>' + h(s0.name) + '</b>' : '<span class="muted">' + h(s0.name) + '</span>') + (s0.hidden ? ' <span class="chip mini grey">permission</span>' : '') + '</span>' +
+                '<span class="tiny muted">' + h(s0.source) + '</span>' + (s0.on ? chip('Yes', 'green') : chip('No', 'grey')) + '</div>';
+            }).join('');
+          }).join('') + '</div><div><div class="card"><h3>' + icon('checklist') + ' Checklists</h3>' + (r.checklists.filter(function (c) { return c.access !== 'No'; }).map(function (c) {
+            return '<div class="row" style="padding:3px 0"><span class="grow small b">' + h(c.name) + '</span>' + accChip(c.access) + '</div>'; }).join('') || '<div class="small muted">No checklist.</div>') + '</div>' +
+          '<div class="card"><h3>' + icon('apps') + ' Apps (' + r.apps.length + ')</h3>' + (r.apps.map(function (a) { return '<div class="small" style="padding:2px 0">' + h(a.name) + ' <span class="tiny muted">' + h(a.dept) + '</span></div>'; }).join('') || '<div class="small muted">No app.</div>') + '</div></div></div>';
+        $('[data-add]', x).onclick = function () { ruleModal({ whoType: 'User', whos: [uid] }, go); };
+      }).catch(function (e) { x.innerHTML = errHtml(e); });
+    }
+    $('[data-go]', b).onclick = go;
+    $('[data-q]', b).onkeydown = function (e) { if (e.key === 'Enter') go(); };
+    $('[data-q]', b).onchange = go;
+  }
+
+  /* ---------- all rules ---------- */
+  function rulesTab(b) {
+    var R = M.rules;
+    b.innerHTML = '<div class="row mb"><input class="inp sm" data-q placeholder="Search rules…" style="width:240px"><select class="inp sm" data-t style="width:auto"><option value="">Every type</option><option>Section</option><option>Checklist</option><option>App</option></select>' +
+      '<span class="grow"></span><button class="btn sm red" data-del disabled>' + icon('delete') + 'Remove ticked</button></div><div data-l></div>';
+    function paint() {
+      var q = val('[data-q]', b).toLowerCase(), t = val('[data-t]', b);
+      var list = R.filter(function (r) { return (!t || r.type === t) && (!q || (r.itemName + ' ' + r.item + ' ' + r.whoName + ' ' + r.who + ' ' + r.notes).toLowerCase().indexOf(q) >= 0); });
+      $('[data-l]', b).innerHTML = list.length ? tableHtml([
+        { t: '', f: function (r) { return '<input type="checkbox" class="selbox" data-ck="' + h(r.id) + '">'; } },
+        { t: 'What', f: function (r) { return chip(r.type, 'grey') + ' <b>' + h(r.itemName || r.item) + '</b>'; } },
+        { t: 'Who', f: function (r) { return chip(r.whoType, 'blue') + ' ' + h(r.whoName || r.who); } },
+        { t: 'Access', f: function (r) { return accChip(r.access); } },
+        { t: 'Notes', cls: 'small wrap', k: 'notes' },
+        { t: 'By', f: function (r) { return '<span class="tiny muted">' + h(r.by) + '<br>' + h(r.at) + '</span>'; } },
+        { t: '', f: function (r) { return '<span class="tiny muted">' + h(r.id) + '</span>'; } }], list, { max: '64vh' }) : '<div class="card">' + emptyHtml('rule', 'No rule yet — roles decide everything.') + '</div>';
+      $$('[data-ck]', b).forEach(function (c) { c.onchange = function () { $('[data-del]', b).disabled = !$$('[data-ck]:checked', b).length; }; });
+    }
+    $('[data-q]', b).oninput = debounce(paint, 120); $('[data-t]', b).onchange = paint;
+    $('[data-del]', b).onclick = function () { removeRules($$('[data-ck]:checked', b).map(function (c) { return c.dataset.ck; }), function () { meta(true).then(function () { rulesTab(b); }); }); };
+    paint();
+  }
+  function removeRules(ids, done) {
+    confirmBox('Remove ' + ids.length + ' rule(s)?', 'The people they cover go back to the next rule or their role.', 'Remove', true).then(function (ok) {
+      if (!ok) return;
+      api('acc.remove', { ids: ids }).then(function (r) { toast(r.message, 'ok'); delete S.cache.accMeta; if (M) M.rules = r.rules; if (done) done(); }).catch(function (e) { toast(e.message, 'bad'); });
+    });
+  }
+
+  /* ---------- checklist doers ---------- */
+  function doersTab(b) {
+    Promise.all([api('chk.doers'), cached('accMeta', function () { return api('acc.meta'); })]).then(function (res) {
+      var d = res[0]; M = res[1];
+      var users = M.who.User;
+      b.innerHTML = '<div class="row mb"><div class="grow small muted">Every name in each checklist\'s Doer List, linked to a login — that decides who sees which checklist. Last sync: <b>' + h(d.last || 'never') + '</b></div>' +
+        '<input class="inp sm" data-q placeholder="Search…" style="width:200px"><span class="qf" data-un>' + icon('link_off') + 'Not linked only</span>' +
+        (perm('settings') ? '<button class="btn sm" data-sync>' + icon('sync') + 'Sync now</button>' : '') + '</div><div data-l></div>';
+      var only = false;
+      function paint() {
+        var q = val('[data-q]', b).toLowerCase(), list = d.rows.filter(function (r) { return (!only || !r.uid) && (!q || (r.name + ' ' + r.chkName + ' ' + r.user + ' ' + r.email).toLowerCase().indexOf(q) >= 0); });
+        $('[data-l]', b).innerHTML = list.length ? tableHtml([
+          { t: 'Checklist', f: function (r) { return '<span class="small b">' + h(r.chkName) + '</span>'; } },
+          { t: 'Doer (as in the sheet)', f: function (r) { return '<b>' + h(r.name) + '</b><div class="tiny muted">' + h([r.email, r.mobile].filter(Boolean).join(' · ')) + '</div>'; } },
+          { t: 'Login', f: function (r) { return '<select class="inp sm" data-link="' + r.row + '" style="min-width:200px"><option value="">— not linked —</option>' + users.map(function (u) {
+            return '<option value="' + h(u.id) + '"' + (u.id === r.uid ? ' selected' : '') + '>' + h(u.name) + '</option>'; }).join('') + '</select>'; } },
+          { t: 'How', f: function (r) { return r.uid ? chip(r.how || 'Linked', r.how === 'Manual' ? 'violet' : 'green') : chip('Not linked', 'orange'); } }], list, { max: '64vh' }) : '<div class="card">' + emptyHtml('checklist', 'No doer found — run the sync.') + '</div>';
+        $$('[data-link]', b).forEach(function (sel) {
+          sel.onchange = function () {
+            api('chk.doerLink', { row: +sel.dataset.link, uid: sel.value }).then(function (r) {
+              toast(r.message, 'ok'); var x = d.rows.filter(function (y) { return y.row === +sel.dataset.link; })[0]; if (x) { x.uid = sel.value; x.how = sel.value ? 'Manual' : ''; }
+            }).catch(function (e) { toast(e.message, 'bad'); });
+          };
+        });
+      }
+      $('[data-q]', b).oninput = debounce(paint, 120);
+      $('[data-un]', b).onclick = function () { only = !only; this.classList.toggle('on', only); paint(); };
+      if ($('[data-sync]', b)) $('[data-sync]', b).onclick = function () {
+        var btn = this; busy(btn, true, 'Syncing…');
+        api('set.run', { job: 'doers' }).then(function (r) { toast(r.message, 'ok'); doersTab(b); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      };
+      paint();
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+
+  /* ---------- the rule form ---------- */
+  function ruleModal(pre, done) {
+    var type = pre.type || 'Section', wt = pre.whoType || 'Designation', acc = 'Yes', items = (pre.items || []).slice(), whos = (pre.whos || []).slice();
+    modal({ title: 'Add an access rule', wide: true, body:
+      '<div class="form-grid"><div class="field"><label>1 · What</label><div class="seg" data-t>' + ['Section', 'Checklist', 'App'].map(function (t) { return '<button data-v="' + t + '">' + t + '</button>'; }).join('') + '</div></div>' +
+      '<div class="field"><label>2 · For whom</label><div class="seg" data-w style="flex-wrap:wrap">' + ACC_WHO.map(function (t) { return '<button data-v="' + t + '">' + t + '</button>'; }).join('') + '</div></div></div>' +
+      '<div class="grid g2"><div><input class="inp sm mb" data-qi placeholder="Search…"><div class="msel" data-items style="max-height:300px"></div></div>' +
+      '<div><div class="small muted mb" data-wh></div><input class="inp sm mb" data-qw placeholder="Search…"><div class="msel" data-whos style="max-height:270px"></div></div></div>' +
+      '<div class="form-grid mt"><div class="field"><label>3 · Access</label><div class="seg" data-a><button data-v="Yes" class="yes">Yes — can open</button><button data-v="No" class="no">No — block</button><button data-v="Manage">Manage</button></div>' +
+      '<div class="tiny muted" style="margin-top:4px">Manage = checklist manager (team view + give tasks). Only for checklists.</div></div>' +
+      '<div class="field"><label>Notes</label><input class="inp sm" data-n placeholder="Why — e.g. night-shift cashier"></div></div><div data-sum class="pill-note"></div>',
+      onOpen: function (m) {
+        function segs() {
+          $$('[data-t] button', m).forEach(function (x) { x.classList.toggle('on', x.dataset.v === type); });
+          $$('[data-w] button', m).forEach(function (x) { x.classList.toggle('on', x.dataset.v === wt); });
+          $$('[data-a] button', m).forEach(function (x) { x.classList.toggle('on', x.dataset.v === acc); x.style.display = x.dataset.v === 'Manage' && type !== 'Checklist' ? 'none' : ''; });
+        }
+        function paintItems() {
+          var q = val('[data-qi]', m).toLowerCase(), g = '';
+          $('[data-items]', m).innerHTML = (M.items[type] || []).filter(function (x) { return !q || (x.name + ' ' + x.id + ' ' + (x.group || '')).toLowerCase().indexOf(q) >= 0; }).map(function (x) {
+            var head = x.group !== g ? '<div class="tiny b muted" style="padding:6px 10px 2px;text-transform:uppercase">' + h(g = x.group || '') + '</div>' : '';
+            return head + '<label><input type="checkbox" data-iv value="' + h(x.id) + '"' + (items.indexOf(x.id) >= 0 ? ' checked' : '') + '><span class="grow">' + h(x.name) + (x.hidden ? ' <span class="chip mini grey">permission</span>' : '') + '</span></label>';
+          }).join('') || '<div class="empty">Nothing matches.</div>';
+          $$('[data-iv]', m).forEach(function (c) { c.onchange = function () { if (c.checked) items.push(c.value); else items = items.filter(function (v) { return v !== c.value; }); sum(); }; });
+        }
+        function paintWhos() {
+          $('[data-wh]', m).textContent = ACC_WHO_HELP[wt];
+          $('[data-qw]', m).style.display = wt === 'Everyone' ? 'none' : '';
+          if (wt === 'Everyone') { $('[data-whos]', m).innerHTML = '<div class="empty">' + icon('groups') + 'Everyone who can sign in</div>'; sum(); return; }
+          var q = val('[data-qw]', m).toLowerCase();
+          $('[data-whos]', m).innerHTML = (M.who[wt] || []).filter(function (x) { return !q || (x.name + ' ' + x.id + ' ' + (x.sub || x.dept || '')).toLowerCase().indexOf(q) >= 0; }).map(function (x) {
+            return '<label><input type="checkbox" data-wv value="' + h(x.id) + '"' + (whos.indexOf(x.id) >= 0 ? ' checked' : '') + '><span class="grow">' + h(x.name) + (x.sub || x.dept ? ' <span class="tiny muted">' + h(x.sub || x.dept) + '</span>' : '') + '</span></label>';
+          }).join('') || '<div class="empty">Nothing matches.</div>';
+          $$('[data-wv]', m).forEach(function (c) { c.onchange = function () { if (c.checked) whos.push(c.value); else whos = whos.filter(function (v) { return v !== c.value; }); sum(); }; });
+          sum();
+        }
+        function sum() {
+          var n = wt === 'Everyone' ? 'everyone' : whos.length + ' ' + wt.toLowerCase() + (whos.length === 1 ? '' : 's');
+          $('[data-sum]', m).innerHTML = items.length ? '<b>' + items.length + ' ' + type.toLowerCase() + (items.length === 1 ? '' : 's') + '</b> → <b>' + n + '</b> = <b>' + (acc === 'No' ? 'blocked' : acc === 'Manage' ? 'manage' : 'can open') + '</b>' : 'Tick what the rule is for.';
+        }
+        $$('[data-t] button', m).forEach(function (x) { x.onclick = function () { if (type !== x.dataset.v) { type = x.dataset.v; items = []; if (acc === 'Manage' && type !== 'Checklist') acc = 'Yes'; } segs(); paintItems(); sum(); }; });
+        $$('[data-w] button', m).forEach(function (x) { x.onclick = function () { if (wt !== x.dataset.v) { wt = x.dataset.v; whos = []; } segs(); paintWhos(); }; });
+        $$('[data-a] button', m).forEach(function (x) { x.onclick = function () { acc = x.dataset.v; segs(); sum(); }; });
+        $('[data-qi]', m).oninput = debounce(paintItems, 120); $('[data-qw]', m).oninput = debounce(paintWhos, 120);
+        segs(); paintItems(); paintWhos();
+      },
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save rule', cls: 'green', click: function (close, m, btn) {
+        if (!items.length) return toast('Tick at least one ' + type.toLowerCase() + '.', 'bad');
+        if (wt !== 'Everyone' && !whos.length) return toast('Tick who the rule is for.', 'bad');
+        busy(btn, true);
+        api('acc.save', { type: type, items: items, whoType: wt, whos: wt === 'Everyone' ? ['*'] : whos, access: acc, notes: val('[data-n]', m) }).then(function (r) {
+          close(); toast(r.message + ' It applies at their next page load.', 'ok'); delete S.cache.accMeta; if (M) M.rules = r.rules;
+          if (done) done(); else show();
+        }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+  show();
+};
+</script>

@@ -1,0 +1,842 @@
+<script>
+/* =====================================================================
+   Dashboard · Checklist · My Delegated Tasks · Delegate Tasks
+   ===================================================================== */
+
+/* ---------------- DASHBOARD ---------------- */
+V.dashboard = function (el) {
+  if (S.boot.perms.director || S.boot.perms.dirUi) {
+    el.innerHTML = '<div class="card">' + loadingHtml('Opening the reports…') + '</div>';
+    loadBundle('ViewsDirector').then(function () { if (S.view === 'dashboard') dirDashboard(el); }).catch(function (e) { el.innerHTML = errHtml(e); });
+    return;
+  }
+  var b = S.boot, approver = has('approvals'), mineCard = !approver && has('my_requests'), issues = has('tickets') && b.perms.issues, hire = !!b.perms.hire && has('hr_dashboard');
+  var quick = [];
+  if (has('my_requests')) quick.push(['leave', 'event_busy', 'Request leave', 'One day or more'], ['advance', 'payments', 'Request advance', 'Against your present days'],
+    ['reimb', 'request_quote', 'Claim reimbursement', 'Expense with the bill']);
+  function dc(key, cls, ic, label, foot, arrow) {
+    return '<button class="dcard" data-card="' + key + '"><span class="dc-ic ' + cls + '">' + icon(ic, 'fill') + '</span><span class="dc-body"><span class="dc-l">' + label + '</span>' +
+      '<span class="dc-v" data-num="' + key + '"><span class="shimmer"></span></span><span class="dc-s" data-foot="' + key + '">' + foot + '</span></span>' + icon(arrow || 'chevron_right') + '</button>';
+  }
+  el.innerHTML =
+    '<div class="page-head"><div class="grow"><p class="greet">' + greeting() + ', ' + h(b.user.first) + '</p>' +
+    '<div class="sub">' + dateLong() + (outletName() ? ' · ' + h(outletName()) : (b.user.location ? ' · ' + h(b.user.location) : '')) + '</div></div></div>' +
+    '<div class="dash-cards">' + dc('pending', 'c1', 'task_alt', 'My pending tasks', 'Checklist · delegated · FMS', 'expand_more') +
+      (approver ? dc('approvals', 'c2', 'approval', 'Approvals', 'Pending approvals') : mineCard ? dc('mine', 'c3', 'edit_calendar', 'My requests', 'Leave · advance · reimbursement') : '') +
+      (issues ? dc('issues', 'c5', 'report_problem', 'Issues', 'Pending issues') : '') + '</div>' +
+    (hire ? '<div class="section-title" id="dhT">Hiring · ' + h(monthLabelNow()) + '</div><div class="dash-cards dhire">' +
+      dc('h_calls', 'c4', 'call', 'No. of calling', 'this month') + dc('h_iv', 'c2', 'event', 'Interview scheduled', 'this month') +
+      dc('h_offers', 'c3', 'description', 'Offer letters given', 'this month') + dc('h_onboard', 'c1', 'how_to_reg', 'Onboarding', 'this month') +
+      dc('h_join', 'c5', 'badge', 'Joining', 'this month') + '</div>' : '') +
+    '<div id="dpend" class="grid g2 mt dtodo"></div>' +
+    '<div class="section-title">Calendar</div><div class="card" id="dcal">' + loadingHtml() + '</div>' +
+    (quick.length ? '<div class="section-title">Quick actions</div><div class="qa">' + quick.map(function (q) {
+      return '<button class="qa-row" data-q="' + q[0] + '"><span class="qa-ic">' + icon(q[1]) + '</span><span class="qa-t"><b>' + h(q[2]) + '</b><span>' + h(q[3]) + '</span></span>' + icon('chevron_right') + '</button>';
+    }).join('') + '</div>' : '');
+
+  $$('[data-q]', el).forEach(function (bt) { bt.onclick = function () { go('my_requests', { tab: bt.dataset.q }); }; });
+  function setNum(k, n, foot) { var e = $('[data-num="' + k + '"]', el); if (e) e.textContent = n; if (foot !== undefined) { var f = $('[data-foot="' + k + '"]', el); if (f) f.innerHTML = foot; } }
+  var T = null, homeP = null;
+  var box = $('#dpend', el);
+  function panel(key, ic, title, open, n) {
+    return '<div class="card" data-pk="' + key + '"><div class="row mb"><h3 class="grow" style="margin:0">' + icon(ic) + ' ' + h(title) + (n ? '<span class="n">' + n + '</span>' : '') + '</h3>' +
+      (open ? '<button class="btn sm ghost" data-open="' + open + '">Open</button>' : '') + '</div><div data-pb="' + key + '">' + (T ? '' : loadingHtml()) + '</div></div>';
+  }
+  function pendingCount() {
+    if (!T) return null;
+    return (T.checklist || []).length + (T.tasks || []).filter(function (x) { return x.open; }).length + ((T.fms && T.fms.total) || 0);
+  }
+  function paintCount() {
+    var n = pendingCount();
+    if (n === null) {
+      if (!homeP) return;
+      setNum('pending', (homeP.checklist || 0) + (homeP.tasks || 0), [has('checklist') ? homeP.checklist + ' checklist' : '', has('tasks') ? homeP.tasks + ' delegated' : ''].filter(Boolean).join(' · ') || 'Nothing given to you');
+      return;
+    }
+    var openT = (T.tasks || []).filter(function (x) { return x.open; }).length;
+    setNum('pending', n, [(T.checklist || []).length + ' checklist', openT + ' delegated', T.fms && T.fms.total ? T.fms.total + ' FMS' : ''].filter(Boolean).join(' · '));
+    setBadge('checklist', (T.checklist || []).length); setBadge('tasks', openT);
+  }
+  function panels() {
+    var showChk = has('checklist'), showTk = has('tasks') || (T && T.tasks && T.tasks.length), showFms = T ? !!(T.fms && T.fms.total) : has('fms'), showAp = !!b.perms.dlgApprove;
+    var openT = T ? (T.tasks || []).filter(function (x) { return x.open; }).length : 0;
+    box.innerHTML = (showAp ? panel('ap', 'verified', 'Delegated tasks to approve', 'tasks', T ? (T.approveTotal || 0) : 0) : '') +
+      (showChk ? panel('cl', 'checklist', 'Checklist · today, this week, this month', 'checklist', T ? (T.checklist || []).length : 0) : '') +
+      (showTk ? panel('tl', 'task_alt', 'Delegated tasks', has('tasks') ? 'tasks' : '', openT) : '') +
+      (showFms ? panel('fm', 'account_tree', 'FMS steps', has('fms') ? 'fms' : '', T && T.fms ? T.fms.total : 0) : '') +
+      (!showChk && !showTk && !showFms && !showAp ? '<div class="card">' + emptyHtml('task_alt', 'No checklist, delegated task or FMS step is given to you.') + '</div>' : '');
+    $$('[data-open]', box).forEach(function (x) { x.onclick = function () { go(x.dataset.open, {}); }; });
+    if (!T) return;
+    if (T.errors && T.errors.length && b.perms.super) box.insertAdjacentHTML('afterbegin', '<div class="warn" style="grid-column:1/-1">' + h(T.errors.join(' · ')) + '</div>');
+    var pb = function (k) { return $('[data-pb="' + k + '"]', box); };
+    if (pb('cl')) {
+      var L = T.checklist || [];
+      pb('cl').innerHTML = L.length ? '<div class="rows">' + L.slice(0, 30).map(function (x, i) {
+        var late = x.planned && x.planned <= Date.now();
+        return '<div class="r" style="cursor:default"><div class="grow"><b>' + h(x.task) + '</b><div class="tiny muted">' + h([x.id, x.chkName, freqName(x.freq), x.plannedText].filter(Boolean).join(' · ')) + '</div></div>' +
+          chip(late ? 'Due' : 'Later', late ? 'red' : 'grey') + '<button class="btn sm green" data-cdone="' + i + '">' + icon('done') + 'Done</button></div>';
+      }).join('') + '</div>' + (L.length > 30 ? '<div class="tiny muted mt">+' + (L.length - 30) + ' more — open the checklist</div>' : '') : '<div class="small muted">Nothing pending.</div>';
+      $$('[data-cdone]', pb('cl')).forEach(function (bt) {
+        bt.onclick = function () {
+          var x = L[+bt.dataset.cdone], row = bt.closest('.r');
+          chkDoneModal({ id: x.chk, row: x.row, taskId: x.id, task: x.task }, function (st, r) {
+            if (st === 'start') { row.style.opacity = '.45'; bt.disabled = true; }
+            else if (st === 'ok') { T.checklist = T.checklist.filter(function (y) { return y !== x; }); dropDash(); paintCount(); panels(); }
+            else if (st === 'fail') { row.style.opacity = ''; bt.disabled = false; toast(r && r.message ? r.message : 'Could not save.', 'bad'); }
+          });
+        };
+      });
+    }
+    if (pb('tl')) {
+      var TL = T.tasks || [];
+      pb('tl').innerHTML = TL.length ? '<div class="rows">' + TL.slice(0, 20).map(function (x, i) {
+        return '<div class="r" style="cursor:default"><div class="grow"><b>' + h(x.title) + '</b><div class="tiny muted">' + h([x.id, x.byName ? 'from ' + x.byName : '', x.dueText ? 'due ' + x.dueText : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+          (x.waiting ? chip('Pending with EA', 'violet') : chip(x.overdue ? 'Overdue' : x.status === 'Reopened' ? 'Sent back' : x.status || 'Pending', x.overdue || x.status === 'Reopened' ? 'red' : 'orange') +
+          '<button class="btn sm green" data-tdone="' + i + '">' + icon('done') + 'Done</button>') + '</div>';
+      }).join('') + '</div>' : '<div class="small muted">No open task.</div>';
+      $$('[data-tdone]', pb('tl')).forEach(function (bt) { bt.onclick = function () { taskDoneModal(TL[+bt.dataset.tdone], function () { TL[+bt.dataset.tdone].open = false; TL[+bt.dataset.tdone].waiting = true; dropDash(); paintCount(); panels(); }); }; });
+    }
+    if (pb('fm')) {
+      var F = (T.fms && T.fms.items) || [];
+      pb('fm').innerHTML = F.length ? '<div class="rows">' + F.slice(0, 25).map(function (x, i) {
+        return '<div class="r" style="cursor:default"><div class="grow"><b>' + h(x.step) + '</b><div class="tiny muted">' + h([x.label, x.fmsName, 'planned ' + x.plannedText].filter(Boolean).join(' · ')) + '</div></div>' +
+          chip(x.overdue ? 'Overdue' : x.today ? 'Due today' : 'Later', x.overdue ? 'red' : x.today ? 'orange' : 'grey') + '<button class="btn sm green" data-fdone="' + i + '">' + icon('done') + 'Done</button></div>';
+      }).join('') + '</div>' + (T.fms.total > 25 ? '<div class="tiny muted mt">+' + (T.fms.total - 25) + ' more</div>' : '') : '<div class="small muted">No FMS step is waiting for you.</div>';
+      $$('[data-fdone]', pb('fm')).forEach(function (bt) {
+        bt.onclick = function () {
+          var x = F[+bt.dataset.fdone];
+          confirmBox('Mark this step done?', '<b>' + h(x.step) + '</b><br>' + h(x.label) + ' · ' + h(x.fmsName), 'Mark done').then(function (ok) {
+            if (!ok) return;
+            busy(bt, true);
+            api('fms.myDone', { id: x.fms, tab: x.tab, row: x.row, step: x.stepN }).then(function (r) {
+              toast(r.message, 'ok'); T.fms.items = T.fms.items.filter(function (y) { return y !== x; }); T.fms.total = Math.max(0, T.fms.total - 1); dropDash(); paintCount(); panels();
+            }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+          });
+        };
+      });
+    }
+    if (pb('ap')) {
+      var A = T.approve || [];
+      pb('ap').innerHTML = A.length ? '<div class="rows">' + A.map(function (x, i) {
+        return '<div class="r" style="cursor:default;flex-wrap:wrap"><div class="grow" style="min-width:200px"><b>' + h(x.title) + '</b><div class="tiny muted">' + h([x.id, x.toName, x.completed ? 'done ' + x.completed : '', x.byName ? 'from ' + x.byName : ''].filter(Boolean).join(' · ')) + '</div>' +
+          (x.assigneeRemarks ? '<div class="small" style="white-space:pre-line">' + h(x.assigneeRemarks.split('\n')[0]) + '</div>' : '') +
+          (x.link ? '<a class="small" href="' + h(x.link) + '" target="_blank" rel="noopener">' + icon('link') + ' ' + h(x.link.length > 60 ? x.link.slice(0, 57) + '…' : x.link) + '</a>' : '') +
+          (x.fileId ? ' <a class="small" href="#" data-afile="' + i + '">' + icon('attach_file') + ' attachment</a>' : '') + '</div>' +
+          (x.own ? chip('Your own task', 'grey') : '<button class="btn sm ghost" data-aback="' + i + '">' + icon('undo') + 'Send back</button><button class="btn sm green" data-aok="' + i + '">' + icon('verified') + 'Approve</button>') + '</div>';
+      }).join('') + '</div>' : '<div class="small muted">Nothing is waiting for your approval.</div>';
+      $$('[data-afile]', pb('ap')).forEach(function (a) { a.onclick = function (e) { e.preventDefault(); viewFile('task', A[+a.dataset.afile].id, 'Attachment'); }; });
+      $$('[data-aok]', pb('ap')).forEach(function (bt) {
+        bt.onclick = function () {
+          var x = A[+bt.dataset.aok]; busy(bt, true);
+          api('task.approve', { ids: [x.id], decision: 'approve' }).then(function (r) { toast(r.message, 'ok'); T.approve = T.approve.filter(function (y) { return y !== x; }); T.approveTotal = Math.max(0, (T.approveTotal || 1) - 1); dropDash(); panels(); })
+            .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+        };
+      });
+      $$('[data-aback]', pb('ap')).forEach(function (bt) {
+        bt.onclick = function () {
+          var x = A[+bt.dataset.aback];
+          modal({ title: 'Send back · ' + x.id, body: '<div class="small muted mb">' + h(x.title) + ' · ' + h(x.toName) + '</div><div class="field"><label>What is missing? *</label><textarea class="inp" data-k="rm" rows="3"></textarea></div>',
+            actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('undo') + 'Send back', cls: 'amber', click: function (close, m, btn) {
+              var rm = val('[data-k="rm"]', m); if (!rm) return toast('Write what is missing.', 'bad');
+              busy(btn, true);
+              api('task.approve', { ids: [x.id], decision: 'return', remark: rm }).then(function (r) { close(); toast(r.message, 'ok'); T.approve = T.approve.filter(function (y) { return y !== x; }); T.approveTotal = Math.max(0, (T.approveTotal || 1) - 1); dropDash(); panels(); })
+                .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+            } }] });
+        };
+      });
+    }
+  }
+  function dropDash() { dcDel('dash.load', { parts: parts, outletId: S.outlet }); }
+  var R = {
+    home: function (d) {
+      if (!d || d._error) { if (!T) setNum('pending', '—', h(d && d._error || '')); setNum('approvals', '—'); setNum('mine', '—'); setNum('issues', '—'); return; }
+      homeP = d.pending || {};
+      paintCount();
+      if (d.approvals) {
+        var A = d.approvals;
+        var pend = (A.cards || []).reduce(function (s0, c) { return s0 + (c.all || 0); }, 0);
+        setNum('approvals', pend, (A.cards || []).filter(function (c) { return c.all; }).map(function (c) { return h(c.label) + ' ' + c.all; }).join(' · ') || 'Nothing pending');
+        setBadge('approvals', A.total);
+      }
+      if (d.issues) setNum('issues', d.issues.error ? '—' : d.issues.pending + d.issues.overdue, d.issues.error ? h(d.issues.error) : [d.issues.pending + ' pending', d.issues.overdue + ' overdue', d.issues.forMe ? d.issues.forMe + ' assigned to you' : ''].filter(Boolean).join(' · '));
+      if (d.mine) setNum('mine', d.mine.open, d.mine.latest.length ? d.mine.latest.slice(0, 2).map(function (x) { return h(x.kind) + ': ' + h(x.status); }).join(' · ') : 'Nothing applied yet');
+    },
+    todo: function (d) {
+      if (!d || d._error) { box.innerHTML = '<div class="card" style="grid-column:1/-1">' + errHtml(d && d._error || 'Could not load your tasks.') + '</div>'; return; }
+      T = d; paintCount(); panels();
+    },
+    hire: function (d) {
+      if (!d || d._error) { ['h_calls', 'h_iv', 'h_offers', 'h_onboard', 'h_join'].forEach(function (k) { setNum(k, '—', h(d && d._error || '')); }); return; }
+      var v = function (x) { return x === null || x === undefined ? '—' : num(x); };
+      setNum('h_calls', v(d.calls), d.callsToday + ' today · this month');
+      setNum('h_iv', v(d.interviews), 'this month');
+      setNum('h_offers', v(d.offers), 'this month');
+      setNum('h_onboard', v(d.onboarding), 'this month');
+      setNum('h_join', v(d.joining), 'this month');
+    },
+    cal: function (d) {
+      var cb = $('#dcal', el); if (!cb) return;
+      if (!d || d._error) { cb.innerHTML = errHtml(d && d._error || 'Could not load the calendar.'); return; }
+      function again() {
+        dropDash();
+        return api('dash.load', { parts: ['cal'], outletId: S.outlet, fresh: true }).then(function (x) { if (x.cal && document.body.contains(cb)) dashCalendar(cb, x.cal, again); });
+      }
+      dashCalendar(cb, d, again);
+    }
+  };
+  $$('[data-card]', el).forEach(function (c) {
+    c.onclick = function () {
+      var k = c.dataset.card;
+      if (k === 'approvals') return go('approvals', {});
+      if (k === 'mine') return go('my_requests', { tab: 'track' });
+      if (k === 'issues') return go('tickets', {});
+      var hv = { h_calls: 'callsMonth', h_iv: 'ivMonth', h_offers: 'offers', h_onboard: 'onboardMonth', h_join: 'joinMonth' }[k];
+      if (hv) return go('hr_dashboard', { view: hv, back: 'dashboard' });
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+  });
+  var parts = ['home', 'todo'].concat(hire ? ['hire'] : []).concat(['cal']);
+  panels();
+  dashLive(parts, R);
+};
+
+var CAL_MN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+var CAL_WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+function calHolidays(H, y, m) {
+  var named = {}, last = {}, out = [], dim = new Date(y, m, 0).getDate();
+  H.forEach(function (x) { if (+x.key.slice(0, 4) === y) named[x.name.toLowerCase()] = 1; });
+  H.forEach(function (x) {
+    var yy = +x.key.slice(0, 4), k = x.name.toLowerCase();
+    if (x.every && yy < y && !named[k] && (!last[k] || +last[k].key.slice(0, 4) < yy)) last[k] = x;
+  });
+  H.forEach(function (x) { if (+x.key.slice(0, 4) === y && +x.key.slice(5, 7) === m) out.push({ d: +x.key.slice(8, 10), h: x }); });
+  Object.keys(last).forEach(function (k) { var x = last[k], dd = +x.key.slice(8, 10); if (+x.key.slice(5, 7) === m && dd <= dim) out.push({ d: dd, h: x, repeat: true }); });
+  return out;
+}
+function dashCalendar(box, D, refresh) {
+  var t = D.today || todayISO(), st = box._cal || { y: +t.slice(0, 4), m: +t.slice(5, 7), sel: 0 };
+  box._cal = st;
+  function ev() {
+    var by = {}, mm = (st.m < 10 ? '0' : '') + st.m;
+    calHolidays(D.holidays || [], st.y, st.m).forEach(function (x) { (by[x.d] = by[x.d] || { h: [], b: [] }).h.push(x); });
+    (D.birthdays || []).forEach(function (b) { if (b.md.slice(0, 2) === mm) { var dd = +b.md.slice(3, 5); (by[dd] = by[dd] || { h: [], b: [] }).b.push(b); } });
+    return by;
+  }
+  function paint() {
+    var by = ev(), first = new Date(st.y, st.m - 1, 1), lead = (first.getDay() + 6) % 7, dim = new Date(st.y, st.m, 0).getDate(), cells = [];
+    for (var i = 0; i < lead; i++) cells.push('<span class="cal-d out"></span>');
+    for (var d = 1; d <= dim; d++) {
+      var k = st.y + '-' + (st.m < 10 ? '0' : '') + st.m + '-' + (d < 10 ? '0' : '') + d, e = by[d], wd = (lead + d - 1) % 7;
+      cells.push('<button class="cal-d' + (k === t ? ' today' : '') + (wd === 6 ? ' sun' : '') + (e && e.h.length ? ' hol' : '') + (st.sel === d ? ' sel' : '') + '" data-day="' + d + '"><span class="n">' + d + '</span>' +
+        (e && e.h.length ? '<span class="hn">' + h(e.h[0].h.name) + '</span>' : '') + (e && e.b.length ? '<span class="bd">' + icon('cake', 'fill') + '<span>' + e.b.length + '</span></span>' : '') + '</button>');
+    }
+    var days = Object.keys(by).map(Number).filter(function (d0) { return !st.sel || d0 === st.sel; }).sort(function (a, b) { return a - b; }), list = [];
+    days.forEach(function (d0) {
+      var dt = new Date(st.y, st.m - 1, d0), wdn = CAL_WD[(dt.getDay() + 6) % 7];
+      by[d0].h.forEach(function (x) {
+        list.push('<div class="cal-e h"><div class="dt"><b>' + d0 + '</b><span>' + wdn + '</span></div><span class="ic">' + icon('celebration', 'fill') + '</span><div class="grow"><b>' + h(x.h.name) + '</b><div class="tiny muted">Holiday' + (x.h.every ? ' · every year' : '') + '</div></div>' +
+          (D.canEdit ? '<button class="icon-btn" data-he="' + h(x.h.id) + '" data-rp="' + (x.repeat ? d0 : '') + '" title="Change">' + icon('edit') + '</button>' + (x.repeat ? '' : '<button class="icon-btn" data-hx="' + h(x.h.id) + '" title="Remove">' + icon('delete') + '</button>') : '') + '</div>');
+      });
+      by[d0].b.forEach(function (x) {
+        list.push('<div class="cal-e b"><div class="dt"><b>' + d0 + '</b><span>' + wdn + '</span></div><span class="ic">' + icon('cake', 'fill') + '</span><div class="grow"><b>' + h(x.name) + '</b><div class="tiny muted">' +
+          h(['Birthday', x.designation, x.location].filter(Boolean).join(' · ')) + '</div></div></div>');
+      });
+    });
+    box.innerHTML = '<div class="cal"><div><div class="cal-h"><button class="icon-btn" data-mv="-1">' + icon('chevron_left') + '</button><b>' + CAL_MN[st.m - 1] + ' ' + st.y + '</b><button class="icon-btn" data-mv="1">' + icon('chevron_right') + '</button>' +
+      '<button class="btn sm ghost" data-now>Today</button><span class="grow"></span>' + (D.canEdit ? '<button class="btn sm" data-add>' + icon('add') + 'Holiday</button>' : '') + '</div>' +
+      '<div class="cal-g">' + CAL_WD.map(function (w) { return '<span class="wd">' + w + '</span>'; }).join('') + cells.join('') + '</div></div>' +
+      '<div><div class="row mb"><b class="grow">' + (st.sel ? st.sel + ' ' + CAL_MN[st.m - 1] : CAL_MN[st.m - 1]) + '</b>' + (st.sel ? '<button class="btn sm ghost" data-all>Whole month</button>' : '') + '</div>' +
+      '<div class="cal-l">' + (list.join('') || '<div class="small muted">No holiday or birthday.</div>') + '</div></div></div>' +
+      ((D.errors || []).length && S.boot.perms.super ? '<div class="warn mt">' + h(D.errors.join(' · ')) + '</div>' : '');
+    $$('[data-mv]', box).forEach(function (b) { b.onclick = function () { st.m += +b.dataset.mv; if (st.m < 1) { st.m = 12; st.y--; } if (st.m > 12) { st.m = 1; st.y++; } st.sel = 0; paint(); }; });
+    $('[data-now]', box).onclick = function () { st.y = +t.slice(0, 4); st.m = +t.slice(5, 7); st.sel = 0; paint(); };
+    $$('[data-day]', box).forEach(function (b) { b.onclick = function () { var d0 = +b.dataset.day; st.sel = st.sel === d0 ? 0 : d0; paint(); }; });
+    if ($('[data-all]', box)) $('[data-all]', box).onclick = function () { st.sel = 0; paint(); };
+    if ($('[data-add]', box)) $('[data-add]', box).onclick = function () { form(null); };
+    $$('[data-he]', box).forEach(function (b) {
+      b.onclick = function () {
+        var x = (D.holidays || []).filter(function (y) { return y.id === b.dataset.he; })[0], rp = +b.dataset.rp; if (!x) return;
+        form(rp ? { id: '', name: x.name, every: true, key: st.y + '-' + (st.m < 10 ? '0' : '') + st.m + '-' + (rp < 10 ? '0' : '') + rp } : x);
+      };
+    });
+    $$('[data-hx]', box).forEach(function (b) {
+      b.onclick = function () {
+        var x = (D.holidays || []).filter(function (y) { return y.id === b.dataset.hx; })[0]; if (!x) return;
+        confirmBox('Remove ' + x.name + '?', fmtISO(x.key) + (x.every ? ' · repeats every year' : ''), 'Remove', true).then(function (ok) {
+          if (!ok) return; busy(b, true);
+          api('cal.remove', { id: x.id }).then(function (r) { toast(r.message, 'ok'); refresh(); }).catch(function (e) { busy(b, false); toast(e.message, 'bad'); });
+        });
+      };
+    });
+  }
+  function form(x) {
+    var d0 = st.sel ? st.y + '-' + (st.m < 10 ? '0' : '') + st.m + '-' + (st.sel < 10 ? '0' : '') + st.sel : '';
+    modal({ title: x && x.id ? 'Change holiday' : 'Add a holiday', body: '<div class="field"><label>Date</label><input type="date" class="inp" data-k="date" value="' + h(x ? x.key : d0) + '"></div>' +
+        '<div class="field"><label>Holiday</label><input class="inp" data-k="name" value="' + h(x ? x.name : '') + '"></div>' +
+        '<label class="check"><input type="checkbox" data-k="every"' + (!x || x.every ? ' checked' : '') + '> Every year</label>',
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, m, btn) {
+        var dt = val('[data-k="date"]', m), nm = val('[data-k="name"]', m);
+        if (!dt) return toast('Pick the date.', 'bad');
+        if (!nm) return toast('Write the holiday name.', 'bad');
+        busy(btn, true);
+        api('cal.save', { id: x && x.id ? x.id : '', date: dt, name: nm, every: $('[data-k="every"]', m).checked }).then(function (r) { close(); toast(r.message, 'ok'); st.y = +dt.slice(0, 4); st.m = +dt.slice(5, 7); refresh(); })
+          .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+  paint();
+}
+
+function taskDoneModal(t, after) {
+  var pk;
+  modal({ title: 'Mark task done', body: '<div class="task-text hi mb">' + h(t.title) + '</div>' +
+      '<div class="field"><label>Link (optional)</label><input class="inp" data-k="link" inputmode="url" placeholder="Sheet, document or photo link"></div>' +
+      '<div class="field"><label>Remark (optional)</label><textarea class="inp" data-k="rm" rows="3" placeholder="Anything the EA should know"></textarea></div><div data-fb></div>',
+    onOpen: function (m) { pk = filePicker($('[data-fb]', m), 'task', { label: 'File (optional)' }); },
+    actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('done_all') + 'Done', cls: 'green', click: function (close, m, btn) {
+      if (pk.busy()) return toast('Wait for the upload.');
+      busy(btn, true); var fl = pk.get();
+      api('task.update', { id: t.id, status: 'Done', link: val('[data-k="link"]', m), remark: val('[data-k="rm"]', m), fileId: fl ? fl.fileId : '' })
+        .then(function (r) { close(); toast(r.message, 'ok'); if (after) after(r); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    } }] });
+}
+
+/**
+ * The dashboard in ONE request (the server answers what it has within ~2.5 s and the page asks again
+ * for the rest). This device's last copy is drawn first, so the numbers are there at once.
+ */
+function dashLive(parts, R) {
+  if (!parts.length) return;
+  var args = { parts: parts, outletId: S.outlet }, k = dcKey('dash.load', args), c = S.fresh ? null : dcGet(k), merged = {}, nav = S.nav, tok = S.token;
+  var pre = S.bootDash, bar = false; S.bootDash = null;
+  function paint(d) { Object.keys(d).forEach(function (p) { if (R[p]) { try { R[p](d[p]); } catch (e) {} } }); }
+  function done() { if (bar) { bar = false; liveBar(-1); } }
+  // came with the sign-in a moment ago: draw it, ask only for what was not ready yet
+  if (pre && pre.data && pre.outletId === S.outlet && JSON.stringify(pre.parts) === JSON.stringify(parts)) {
+    var pend = pre.data._pending; delete pre.data._pending;
+    merged = pre.data; paint(merged);
+    if (!pend || !pend.length) { dcSet(k, merged); return; }
+    parts = pend;
+  } else if (c && c.d) { bar = true; paint(c.d); liveBar(1); }
+  (function next(list) {
+    api('dash.load', { parts: list, outletId: S.outlet }).then(function (d) {
+      if (S.token !== tok) return done();
+      var pend = d._pending; delete d._pending;
+      Object.keys(d).forEach(function (p) { merged[p] = d[p]; });
+      if (S.nav === nav) paint(d);
+      if (pend && pend.length) return next(pend);
+      done();
+      dcSet(k, merged);
+    }).catch(function (e) {
+      done();
+      if (S.nav !== nav) return;
+      if (!c) list.forEach(function (p) { if (R[p]) { try { R[p]({ _error: e.message }); } catch (x) {} } });
+      else if (!/session has ended/i.test(e.message)) toast('Showing the last copy — ' + e.message, 'bad');
+    });
+  })(parts);
+}
+
+/* ---------------- CHECKLIST — the one app for every checklist ---------------- */
+var FREQ_MAP = { D: 'Daily', W: 'Weekly', M: 'Monthly', F: 'Fortnightly', Q: 'Quarterly', H: 'Half-yearly', Y: 'Yearly', A: 'Alternate day' };
+function freqName(f) { var k = String(f || '').trim().toUpperCase(); return FREQ_MAP[k] || FREQ_MAP[k.charAt(0)] || f || '—'; }
+function chkStatus(t, now) {
+  if (t.done) return t.late ? ['Late', 'orange', 'schedule'] : ['On time', 'green', 'task_alt'];
+  if (t.planned && t.planned > now) return ['Upcoming', 'blue', 'event'];
+  return ['Pending', 'red', 'pending_actions'];
+}
+V.checklist = function (el, p) {
+  var tab = p.tab || (p.id ? 'team' : 'mine');
+  var bootChk = S.boot.checklists || 0;
+  el.innerHTML = pageHead('My Checklist', '', '<button class="btn sm ghost" id="crf">' + icon('refresh') + 'Refresh</button>') +
+    '<div id="ctabs"></div><div id="cbody">' + loadingHtml() + '</div>';
+  $('#crf', el).onclick = function () { S.cache.chkMy = null; S.fresh = true; try { show(); } finally { S.fresh = false; } };
+  var manages = null;
+  function tabs() {
+    var list = [['mine', 'My tasks']];
+    if (manages) list.push(['team', 'Team view'], ['scores', 'Scores']);
+    list.push(['given', 'Given to me']);
+    $('#ctabs', el).innerHTML = tabsHtml(list, tab);
+    bindTabs($('#ctabs', el), function (t) { tab = t; show(); });
+  }
+  function show() {
+    var body = $('#cbody', el);
+    body.dataset.tab = tab; body.dataset.chk = '';
+    if (tab === 'team') return chkTeam(body, p.id || '', p.date || todayISO());
+    if (tab === 'given') return chkGiven(body);
+    if (tab === 'scores') return chkScores(body);
+    chkMine(body, function (d) { if (manages === null) { manages = d.lists.some(function (l) { return l.manage; }); tabs(); } });
+  }
+  manages = p.id ? true : null;
+  tabs();
+  show();
+};
+
+function chkMine(body, onData) {
+  var st = S.cache.chkSt2 || (S.cache.chkSt2 = { qf: 'today' });
+  var args = st.to ? { to: st.to } : {};
+  body.innerHTML = loadingHtml('Loading your tasks…');
+  if (S.cache.chkMy && !S.fresh && S.cache.chkMyTo === (st.to || '')) return draw(S.cache.chkMy);
+  live('chk.my', args, function (d) { S.cache.chkMy = d; S.cache.chkMyTo = st.to || ''; draw(d); }, {
+    busy: function () { return !!$('.modal-bg'); },
+    alive: function () { return !body.dataset.tab || body.dataset.tab === 'mine'; } })
+    .catch(function (e) { body.innerHTML = errHtml(e); });
+
+  function ends() {
+    var n = new Date(), mon = new Date(n.getFullYear(), n.getMonth(), n.getDate() - ((n.getDay() + 6) % 7));
+    return { today: isoOf(n), week: isoOf(new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 6)), month: isoOf(new Date(n.getFullYear(), n.getMonth() + 1, 0)), monday: mon };
+  }
+  function scores(d) {
+    var E = ends(), we = E.monday.getTime(), ws = new Date(E.monday.getFullYear(), E.monday.getMonth(), E.monday.getDate() - 7).getTime();
+    var by = {};
+    d.tasks.forEach(function (t) {
+      if (t.mine === false || (t.given && !t.freq) || !t.planned || t.planned < ws || t.planned >= we) return;
+      var x = by[t.chk] || (by[t.chk] = { name: t.chkName, plan: 0, done: 0, onTime: 0 });
+      x.plan++;
+      if (t.done && (!t.doneTs || t.doneTs < we)) x.done++;
+      if (t.done && t.doneTs && t.doneTs <= t.planned) x.onTime++;
+    });
+    var list = Object.keys(by).map(function (k) { var x = by[k]; x.nd = x.done / x.plan * 100 - 100; x.ot = x.onTime / x.plan * 100 - 100; return x; });
+    var end = new Date(we - 86400000);
+    return { list: list, label: fmtISO(isoOf(new Date(ws))).slice(0, 5) + ' – ' + fmtISO(isoOf(end)).slice(0, 5) };
+  }
+  function pct(v) { var r = Math.round(v * 10) / 10; return (r > 0 ? '+' : '') + (r === 0 ? '0' : r.toFixed(1)) + '%'; }
+  function tone(v) { return v >= -5 ? 't-good' : v >= -20 ? 't-warn' : 't-bad'; }
+
+  function draw(d) {
+    if (onData) onData(d);
+    var E = ends(), seeDone = !!d.seeDone, wk = { from: isoOf(E.monday), to: E.week }, mo = { from: E.today.slice(0, 8) + '01', to: E.month };
+    if (st.qf === 'month' && d.to < E.month && !st.to) { st.to = E.month; S.cache.chkMy = null; return chkMine(body, onData); }
+    var own = d.tasks.filter(function (t) { return t.mine !== false && t.planned; });
+    function pick(k) {
+      return own.filter(function (t) {
+        var day = isoOf(new Date(t.planned)), f = freqName(t.freq);
+        if (k === 'overdue') return !t.done && t.planned < Date.now() && (/^(Weekly|Fortnightly)$/.test(f) ? day >= wk.from && day <= wk.to : /^(Monthly|Quarterly|Half-yearly|Yearly)$/.test(f) ? day >= mo.from && day <= mo.to : day === E.today);
+        if (k === 'today') return day === E.today;
+        if (k === 'week') return f === 'Weekly' && day >= wk.from && day <= wk.to;
+        return f === 'Monthly' && day >= mo.from && day <= mo.to;
+      });
+    }
+    function shown(k) { return pick(k).filter(function (t) { return seeDone || !t.done; }); }
+    function pendingOf(k) { return pick(k).filter(function (t) { return !t.done; }).length; }
+    var many = d.lists.filter(function (l) { return l.count; }).length > 1;
+    var S0 = scores(d);
+    body.innerHTML = (d.errors.length ? '<div class="warn mb">' + h(d.errors.join(' · ')) + '</div>' : '') +
+      (S0.list.length ? '<div class="ck-score"><div class="ck-sh">' + icon('insights') + '<b>Last week\'s score</b><span>' + h(S0.label) + '</span></div>' +
+        S0.list.map(function (x) {
+          return '<div class="ck-sl">' + (S0.list.length > 1 ? '<div class="ck-sn">' + h(x.name) + '</div>' : '') +
+            '<div class="ck-sm"><div class="ck-m ' + tone(x.nd) + '"><b>' + pct(x.nd) + '</b><span>% work not done</span></div>' +
+            '<div class="ck-m ' + tone(x.ot) + '"><b>' + pct(x.ot) + '</b><span>% work not done on time</span></div></div>' +
+            '<div class="ck-sx">' + x.done + ' of ' + x.plan + ' done · ' + x.onTime + ' on time</div></div>';
+        }).join('') + '</div>' : '') +
+      '<div class="ck-seg" id="cks">' + [['today', 'Today'], ['week', 'This week'], ['month', 'This month'], ['overdue', 'Overdue']].map(function (q) {
+        return '<button data-q="' + q[0] + '"' + (st.qf === q[0] ? ' class="on"' : '') + '>' + q[1] + '<em>' + pendingOf(q[0]) + '</em></button>';
+      }).join('') + '</div><div id="ckl"></div>';
+    $$('[data-q]', body).forEach(function (b) { b.onclick = function () { st.qf = b.dataset.q; if (st.qf === 'month' && d.to < E.month) { st.to = E.month; S.cache.chkMy = null; return chkMine(body, onData); } draw(d); }; });
+    var rows = shown(st.qf).sort(function (a, b) { return (a.done - b.done) || (a.planned - b.planned); }), now = Date.now(), box = $('#ckl', body);
+    var what = { today: 'today', week: 'among this week\'s weekly tasks', month: 'among this month\'s monthly tasks', overdue: 'overdue today, this week or this month' }[st.qf];
+    if (!rows.length) { box.innerHTML = '<div class="card">' + emptyHtml('task_alt', (seeDone ? 'No task ' : 'Nothing pending ') + what + '.') + '</div>'; return; }
+    var nd = rows.filter(function (t) { return t.done; }).length;
+    box.innerHTML = (seeDone ? '<div class="small muted mb">' + (rows.length - nd) + ' pending · ' + nd + ' done</div>' : '') + '<div class="recs">' + rows.map(function (t, i) {
+      var day = isoOf(new Date(t.planned)), late = !t.done && day < E.today, due = !t.done && !late && t.planned <= now;
+      var tag = t.done ? (t.late ? chip('Done late', 'orange') : chip('Done', 'green')) : late ? chip('Overdue', 'red') : due ? chip('Due', 'orange') : '';
+      return '<div class="ck-r' + (t.done ? ' done' : '') + '" data-i="' + i + '"><span class="ck-dot d-' + (t.done ? 'ok' : late ? 'bad' : due ? 'warn' : 'up') + '"></span><div class="ck-t"><b>' + h(t.task) + '</b>' +
+        '<span>' + h(t.id) + (many ? ' · ' + h(t.chkName) : '') + ' · ' + h(freqName(t.freq)) + ' · ' + (day === E.today ? h(t.time) : h(fmtISO(day).slice(0, 5) + ' ' + t.time)) + (t.given ? ' · given by ' + h(t.by) : '') + '</span></div>' + tag + '</div>';
+    }).join('') + '</div>';
+    $$('[data-i]', box).forEach(function (r) { r.onclick = function () { chkTaskModal(rows[+r.dataset.i], now, d.lists, function () { dropFreshChip(); dcSet(dcKey('chk.my', args), d); draw(d); }); }; });
+  }
+}
+
+function chkScoreTone(v) { return v >= -5 ? 't-good' : v >= -20 ? 't-warn' : 't-bad'; }
+function chkPct(v) { var r = Math.round(v * 10) / 10; return (r === 0 ? '0' : r.toFixed(1)) + '%'; }
+function chkScores(body) {
+  var D = null, st = { id: '', week: '', doer: '' };
+  body.innerHTML = loadingHtml('Working out the scores…');
+  live('chk.scores', { weeks: 8 }, function (d) { D = d; if (body.dataset.tab === 'scores') paint(); }, { alive: function () { return body.dataset.tab === 'scores'; } })
+    .catch(function (e) { body.innerHTML = errHtml(e); });
+  function wkLabel(w) { return w ? fmtISO(w.from).slice(0, 5) + ' – ' + fmtISO(w.to).slice(0, 5) : ''; }
+  function sum(rows) {
+    var p = 0, dn = 0, ot = 0; rows.forEach(function (x) { p += x.plan; dn += x.done; ot += x.onTime; });
+    return p ? { plan: p, done: dn, onTime: ot, nd: dn / p * 100 - 100, ot: ot / p * 100 - 100 } : null;
+  }
+  function metric(x) {
+    return '<div class="ck-sm"><div class="ck-m ' + chkScoreTone(x.nd) + '"><b>' + chkPct(x.nd) + '</b><span>% work not done</span></div>' +
+      '<div class="ck-m ' + chkScoreTone(x.ot) + '"><b>' + chkPct(x.ot) + '</b><span>% work not done on time</span></div></div>';
+  }
+  function paint() {
+    if (st.id) return detail();
+    var last = D.weeks[0];
+    body.innerHTML = (D.errors.length ? '<div class="warn mb">' + h(D.errors.join(' · ')) + '</div>' : '') + '<div id="scC"></div>';
+    hubCards($('#scC', body), D.lists.map(function (l) {
+      var x = sum(l.rows.filter(function (r) { return r.week === last.i; }));
+      return { key: l.id, icon: 'insights', label: l.name, value: x ? chkPct(x.nd) : '—', sub: x ? 'last week ' + wkLabel(last) + ' · on time ' + chkPct(x.ot) + ' · ' + l.doers.length + ' doers' : 'No task planned last week' };
+    }), function (k) { st.id = k; st.week = String(last.i); st.doer = ''; paint(); });
+  }
+  function detail() {
+    var L = D.lists.filter(function (l) { return l.id === st.id; })[0];
+    var b = hubPanel(body, L.name + ' · Scores', 'insights', function () { st.id = ''; paint(); });
+    b.innerHTML = '<div class="fbar"><div class="ff"><label>Week</label><select class="inp sm" id="scW"><option value="">Every week</option>' + D.weeks.map(function (w) {
+        return '<option value="' + w.i + '"' + (String(w.i) === st.week ? ' selected' : '') + '>' + wkLabel(w) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="ff grow"><label>Doer</label><select class="inp sm" id="scD"><option value="">Every doer</option>' + L.doers.map(function (n) {
+        return '<option' + (n === st.doer ? ' selected' : '') + '>' + h(n) + '</option>'; }).join('') + '</select></div></div><div id="scT"></div><div id="scL"></div>';
+    $('#scW', b).onchange = function () { st.week = this.value; rows(); };
+    $('#scD', b).onchange = function () { st.doer = this.value; rows(); };
+    function rows() {
+      var R = L.rows.filter(function (x) { return (st.week === '' || String(x.week) === st.week) && (!st.doer || x.doer === st.doer); });
+      var tot = sum(R), weekOf = function (i) { return D.weeks.filter(function (w) { return w.i === i; })[0]; };
+      $('#scT', b).innerHTML = tot ? '<div class="ck-score"><div class="ck-sh">' + icon('insights') + '<b>' + h(st.doer || 'Everyone') + '</b><span>' + (st.week === '' ? 'last ' + D.weeks.length + ' weeks' : wkLabel(weekOf(+st.week))) + '</span></div>' +
+        metric(tot) + '<div class="ck-sx">' + tot.done + ' of ' + tot.plan + ' done · ' + tot.onTime + ' on time</div></div>' : '';
+      R.sort(function (x, y) { return (y.week - x.week) || (x.nd - y.nd) || x.doer.localeCompare(y.doer); });
+      recList($('#scL', b), R, {
+        title: function (x) { return h(st.doer && st.week === '' ? wkLabel(weekOf(x.week)) : x.doer); },
+        sub: function (x) { return h((st.week === '' && !st.doer ? wkLabel(weekOf(x.week)) + ' · ' : '') + x.done + ' of ' + x.plan + ' done · ' + x.onTime + ' on time'); },
+        right: function (x) { return '<span class="chip ' + (x.nd >= -5 ? 'green' : x.nd >= -20 ? 'orange' : 'red') + '">' + chkPct(x.nd) + '</span> <span class="chip ' + (x.ot >= -5 ? 'green' : x.ot >= -20 ? 'orange' : 'red') + '">' + chkPct(x.ot) + '</span>'; },
+        empty: 'No task was planned for this choice.', emptyIcon: 'insights'
+      });
+    }
+    rows();
+  }
+}
+
+/** The task card — light, like the old "Task Details" but readable. */
+function chkTaskModal(t, now, lists, after) {
+  var s = chkStatus(t, now), pk, list = (lists || []).filter(function (l) { return l.id === t.chk; })[0] || {};
+  var tooEarly = !t.done && t.planned && t.planned > Date.now() + 36 * 3600000 && !list.manage;
+  modal({ title: 'Task details', body:
+    '<div class="small muted mb">' + h(t.chkName || '') + ' · ' + h(t.id) + '</div>' +
+    '<div class="cells"><div class="cell"><div class="cl">Task ID</div><div class="cv">' + h(t.id) + '</div></div>' +
+    '<div class="cell"><div class="cl">Frequency</div><div class="cv">' + h(freqName(t.freq)) + '</div></div>' +
+    '<div class="cell full"><div class="cl">Task</div><div class="cv hi">' + h(t.task) + '</div></div>' +
+    '<div class="cell hl"><div class="cl">Planned</div><div class="cv">' + h(t.plannedText || '—') + '</div></div>' +
+    '<div class="cell"><div class="cl">Actual</div><div class="cv" id="tact">' + h(t.actualText || '—') + '</div></div>' +
+    '<div class="cell full"><div class="cl">Status</div><div class="cv" id="tst">' + chip(s[0], s[1]) + (t.given ? ' ' + chip('given by ' + t.by, 'violet') : '') + '</div></div>' +
+    (t.note ? '<div class="cell full"><div class="cl">Note</div><div class="cv">' + h(t.note) + '</div></div>' : '') + '</div>' +
+    (t.done ? '<div class="section-title">Remark</div><div class="li">' + (t.remark ? h(t.remark) : '<span class="muted">No remark</span>') +
+        (t.att ? '<div class="mt"><a href="' + h(t.att) + '" target="_blank">' + icon('image') + ' Photo</a></div>' : '') + '</div>'
+      : '<div class="field mt"><label>Remark (optional)</label><textarea class="inp" id="trm" placeholder="Add any remarks…"></textarea></div><div id="tfb"></div>' +
+        (tooEarly ? '<div class="warn mt">This task is planned for later — it can be marked done from the day before.</div>' : '')) +
+    '<div id="terr" class="mt"></div>',
+    onOpen: function (m) { if (!t.done) pk = filePicker($('#tfb', m), 'checklist', { label: 'Photo (optional)' }); },
+    actions: t.done ? [{ label: 'Close', cls: 'ghost' }] : [{ label: 'Close', cls: 'ghost' }].concat(has('tickets') && t.mine !== false ? [{ label: icon('report_problem') + 'Can\'t do it — raise an issue', cls: 'amber', click: function (close, m) {
+      var rm = val('#trm', m); close(); raiseTicket({ checklist: { chkId: t.chk, taskId: t.id, freq: t.freq, task: t.task, planned: t.plannedText || '' }, subject: t.task, details: rm });
+    } }] : []).concat([{ label: icon('check_circle') + 'Mark as done', cls: 'green', click: function (close, m, btn) {
+      if (tooEarly) return toast('This task cannot be marked done yet.', 'bad');
+      if (pk && pk.busy()) return toast('Wait for the photo to finish uploading.');
+      var f = pk ? pk.get() : null, rm = val('#trm', m), was = { done: t.done, actualText: t.actualText, remark: t.remark, att: t.att, late: t.late };
+      // ticked at once — saved behind it, put back if the server refuses
+      t.done = true; t.actualText = 'saving…'; t.remark = rm; t.late = !!(t.planned && Date.now() > t.planned);   // same rule as the server
+      if (f) t.att = 'https://drive.google.com/uc?id=' + f.fileId;
+      close(); if (after) after();
+      saveInBg('chk.done', { id: t.chk, row: t.row, taskId: t.id, remark: rm, fileId: f ? f.fileId : '' }, 'Marking ' + t.id + ' done…').then(function (r) {
+        t.actualText = r.actualText; t.doneAt = r.doneAt; t.late = r.late; t.remark = r.remark || rm;
+        S.cache.dashChk = null; if (after) after();
+      }).catch(function () { t.done = was.done; t.actualText = was.actualText; t.remark = was.remark; t.att = was.att; t.late = was.late; if (after) after(); });
+    } }]) });
+}
+
+/** Tasks another checklist manager gave me. */
+function chkGiven(body, quiet) {
+  if (!quiet) body.innerHTML = loadingHtml();
+  live('chk.mine', {}, function (list) {
+    body.innerHTML = list.length ? '<div class="list">' + list.map(function (a, i) {
+      return '<div class="li"><div class="top"><div class="grow"><div class="small muted">' + h(a.checklist) + ' · ' + h(a.planned) + ' · was ' + h(a.from) + '</div>' +
+        '<div class="task-text hi">' + h(a.task) + '</div><div class="small muted">Given by ' + h(a.by) + (a.note ? ' · “' + h(a.note) + '”' : '') + '</div></div>' +
+        '<button class="btn sm green" data-i="' + i + '">' + icon('done') + 'Done</button></div></div>';
+    }).join('') + '</div>' : '<div class="card">' + emptyHtml('assignment_turned_in', 'Nothing has been given to you.') + '</div>';
+    $$('[data-i]', body).forEach(function (bt) {
+      bt.onclick = function () {
+        var a = list[+bt.dataset.i], card = bt.closest('.li');
+        chkDoneModal({ id: a.id, row: a.row, taskId: a.taskId, task: a.task }, function (stage) {
+          if (stage === 'start') park(card, true); else if (stage === 'ok') { park(card, 'gone'); if (!SAVING) chkGiven(body, true); } else park(card, false);
+        });
+      };
+    });
+  }, { el: body, busy: true, quiet: quiet, alive: function () { return body.dataset.tab === 'given'; } }).catch(function (e) { body.innerHTML = errHtml(e); });
+}
+
+/** Team view — checklists you manage, one day at a time, with "give to someone". */
+function chkTeam(body, id, date) {
+  if (id) return chkDetail(body, id, date);
+  body.innerHTML = '<div class="row mb"><div class="field" style="margin:0"><label>Day</label><input type="date" class="inp sm" id="cdate" value="' + date + '" max="' + todayISO() + '" style="width:auto"></div></div><div id="tlist">' + loadingHtml() + '</div>';
+  $('#cdate', body).onchange = function () { chkTeam(body, '', this.value); };
+  var mark = body.dataset.chk = 'team|' + date;
+  live('chk.overview', { date: date }, function (d) {
+    var list = d.list.filter(function (c) { return c.manage; });
+    $('#tlist', body).innerHTML = list.length ? '<div class="grid g3">' + list.map(function (c) {
+      var pct = c.total ? Math.round(c.done / c.total * 100) : 0;
+      return '<div class="card" data-id="' + h(c.id) + '" style="cursor:pointer"><div class="row"><div class="grow"><h3 style="margin:0">' + h(c.name) + '</h3>' +
+        '<div class="small muted">' + h(c.outlet) + ' · team view</div></div>' + icon('chevron_right') + '</div>' +
+        (c.error ? errHtml(c.error) : '<div class="row mt"><div class="grow"><div class="bar"><i style="width:' + pct + '%"></i></div></div><b>' + pct + '%</b></div>' +
+        '<div class="row mt small">' + chip(c.done + ' done', 'green') + chip(c.pending + ' pending', c.pending ? 'orange' : 'grey') + '</div>') + '</div>';
+    }).join('') + '</div>' : '<div class="card">' + emptyHtml('checklist', 'You do not manage any checklist.') + '</div>';
+    $$('[data-id]', body).forEach(function (c) { c.onclick = function () { chkDetail(body, c.dataset.id, date); }; });
+  }, { alive: function () { return body.dataset.chk === mark; } }).catch(function (e) { var t = $('#tlist', body); if (t) t.innerHTML = errHtml(e); });
+}
+
+function chkDetail(el, id, date, quiet) {
+  var mark = el.dataset.chk = id + '|' + date;
+  if (!quiet) el.innerHTML = loadingHtml('Opening checklist…');
+  // filters and ticks stay when the list is redrawn with newer data
+  var st = el.__chkSt && el.__chkSt.key === mark ? el.__chkSt : (el.__chkSt = { key: mark, doer: '', status: 'pending', q: '', qRaw: '', sel: {} });
+  var args = st.status === 'overdue' ? { id: id, date: date, overdue: true } : { id: id, date: date };
+  live('chk.tasks', args, draw, { el: el, busy: true, quiet: quiet, alive: function () { return el.dataset.chk === mark && (st.status === 'overdue') === !!args.overdue; } })
+    .catch(function (e) { el.innerHTML = '<button class="btn ghost mb" id="bk">' + icon('arrow_back') + 'Back</button>' + errHtml(e); $('#bk', el).onclick = function () { chkTeam(el, '', date); }; });
+  function draw(d) {
+    el.innerHTML =
+      '<div class="page-head"><button class="icon-btn" id="back">' + icon('arrow_back') + '</button><div class="grow"><h2>' + h(d.name) + '</h2>' +
+      '<div class="sub">' + (d.overdue ? 'Overdue — daily tasks of today, weekly of this week and monthly of this month not done in time' : fmtISO(d.date)) + ' · ' + (d.manage ? 'Team view — you can mark any task' + (d.canAssign ? ' or give it to someone' : '') : 'Your tasks') + '</div></div>' +
+      '<input type="date" class="inp sm" id="dd" value="' + d.date + '" max="' + todayISO() + '" style="width:auto"></div>' +
+      '<div class="card"><div class="row">' +
+      '<div class="seg" id="sseg">' + [['pending', 'Pending'], ['overdue', 'Overdue'], ['done', 'Done'], ['all', 'All']].map(function (x) { return '<button data-s="' + x[0] + '"' + (st.status === x[0] ? ' class="on"' : '') + '>' + x[1] + '</button>'; }).join('') + '</div>' +
+      (d.manage && d.doers.length > 1 ? '<select class="inp sm" id="doer" style="width:auto" data-free><option value="">Everyone</option>' + d.doers.map(function (x) { return '<option' + (x === st.doer ? ' selected' : '') + '>' + h(x) + '</option>'; }).join('') + '</select>' : '') +
+      '<input class="inp sm grow" id="q" placeholder="Search task…" style="min-width:140px" data-free value="' + h(st.qRaw) + '">' +
+      '<span class="right small muted" id="cnt"></span></div></div><div class="list mt" id="tl"></div><div id="abar"></div>';
+    $('#back', el).onclick = function () { chkTeam(el, '', date); };
+    $('#dd', el).onchange = function () { chkDetail(el, id, this.value); };
+    $$('#sseg button', el).forEach(function (b) {
+      b.onclick = function () {
+        var was = st.status; st.status = b.dataset.s;
+        if ((was === 'overdue') !== (st.status === 'overdue')) return chkDetail(el, id, date);
+        $$('#sseg button', el).forEach(function (x) { x.classList.toggle('on', x === b); }); render();
+      };
+    });
+    if ($('#doer', el)) $('#doer', el).onchange = function () { st.doer = this.value; render(); };
+    $('#q', el).oninput = function () { st.qRaw = this.value; st.q = this.value.toLowerCase(); render(); };
+    function render() {
+      var rows = d.tasks.filter(function (t) {
+        if ((st.status === 'pending' || st.status === 'overdue') && t.done) return false;
+        if (st.status === 'done' && !t.done) return false;
+        if (st.doer && t.name !== st.doer) return false;
+        if (st.q && (t.task + ' ' + t.name + ' ' + t.id).toLowerCase().indexOf(st.q) < 0) return false;
+        return true;
+      });
+      var done = d.tasks.filter(function (t) { return t.done; }).length;
+      $('#cnt', el).textContent = done + ' / ' + d.tasks.length + ' done';
+      $('#tl', el).innerHTML = rows.length ? rows.map(function (t) {
+        var sel = d.canAssign && !t.done;
+        return '<div class="li ' + (t.done ? 'done' : '') + '"><div class="top">' +
+          (sel ? '<input type="checkbox" class="selbox" data-free data-sel="' + t.row + '"' + (st.sel[t.row] ? ' checked' : '') + '>' : '') +
+          '<div class="grow"><div class="small muted">' + (d.overdue ? '<b style="color:var(--red)">' + h((t.plannedText || '').slice(0, 10)) + '</b> ' : '') + h(t.time) + ' · ' + h(t.name) + (t.mine ? ' (you)' : '') + ' · ' + h(t.id) +
+          (t.assignedTo ? ' · <b style="color:var(--violet)">given to ' + h(t.assignedTo) + '</b>' : '') + '</div>' +
+          '<div class="task-text hi">' + h(t.task) + '</div>' +
+          (t.done ? '<div class="small" style="color:var(--green)">✓ ' + h(t.doneAt) + (t.late ? ' <span class="chip red">late</span>' : '') + (t.remark ? ' · ' + h(t.remark) : '') +
+            (t.att ? ' · <a href="' + h(t.att) + '" target="_blank">photo</a>' : '') + '</div>' : '') + '</div>' +
+          (t.canDo ? '<button class="btn sm green" data-done="' + t.row + '">' + icon('done') + 'Done</button>' : (t.done ? icon('check_circle', 'fill') : '')) +
+          '</div></div>';
+      }).join('') : '<div class="card">' + emptyHtml(st.status === 'pending' ? 'celebration' : 'checklist', st.status === 'pending' ? 'Nothing pending here.' : 'No tasks.') + '</div>';
+      $$('[data-done]', el).forEach(function (b) {
+        b.onclick = function () {
+          var t = d.tasks.filter(function (x) { return x.row === +b.dataset.done; })[0];
+          chkDoneModal({ id: id, row: t.row, taskId: t.id, task: t.task }, function (stage, r) {
+            if (stage === 'start') { t.done = true; t.canDo = false; t.doneAt = 'just now'; delete st.sel[t.row]; render(); }
+            else if (stage === 'ok') { if (r && r.doneAt) t.doneAt = r.doneAt; if (!SAVING) chkDetail(el, id, date, true); else render(); }
+            else { t.done = false; t.canDo = true; t.doneAt = ''; render(); }
+          });
+        };
+      });
+      $$('[data-sel]', el).forEach(function (c) { c.onchange = function () { if (c.checked) st.sel[c.dataset.sel] = 1; else delete st.sel[c.dataset.sel]; bar(); }; });
+      bar();
+    }
+    function bar() {
+      var n = Object.keys(st.sel).length, ab = $('#abar', el);
+      if (!n) { ab.innerHTML = ''; return; }
+      ab.innerHTML = '<div class="sticky-bar"><b>' + n + ' selected</b><span class="grow"></span><button class="btn sm ghost" id="clr" style="background:transparent;color:#fff;border-color:rgba(255,255,255,.4)">Clear</button>' +
+        '<button class="btn sm" id="asg">' + icon('assignment_ind') + 'Give to someone</button></div>';
+      $('#clr', ab).onclick = function () { st.sel = {}; render(); };
+      $('#asg', ab).onclick = function () {
+        var items = Object.keys(st.sel).map(function (r) { var t = d.tasks.filter(function (x) { return x.row === +r; })[0]; return { row: t.row, taskId: t.id }; });
+        chkAssignModal(id, date, items, function () { st.sel = {}; chkDetail(el, id, date, true); });
+      };
+    }
+    render();
+  }
+}
+
+function chkDoneModal(t, after) {
+  var pk;
+  modal({ title: 'Mark done', body: '<div class="task-text hi mb">' + h(t.task) + '</div>' +
+      '<div class="field"><label>Remark (optional)</label><textarea class="inp" id="rm" placeholder="Anything to note?"></textarea></div><div id="fb"></div><div id="derr" class="mt"></div>',
+    onOpen: function (el) { pk = filePicker($('#fb', el), 'checklist', { label: 'Photo (optional)' }); },
+    actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('done') + 'Mark done', cls: 'green', click: function (close, el, btn) {
+      if (pk.busy()) return toast('Wait for the photo to finish uploading.');
+      var f = pk.get(), rm = val('#rm', el);
+      close(); after && after('start');                                  // ticked at once — saved behind it
+      saveInBg('chk.done', { id: t.id, row: t.row, taskId: t.taskId, remark: rm, fileId: f ? f.fileId : '' }, 'Marking ' + (t.taskId || 'the task') + ' done…')
+        .then(function (r) { S.cache.dashChk = null; S.cache.chkMy = null; after && after('ok', r); })
+        .catch(function (e) { after && after('fail', e); });
+    } }] });
+}
+
+function chkAssignModal(id, date, items, after) {
+  var m = modal({ title: 'Give ' + items.length + ' task(s) to…', body: loadingHtml('Loading people…'),
+    actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('send') + 'Give', click: function (close, el, btn) {
+      var to = picked(el)[0];
+      if (!to) return toast('Pick a person.', 'bad');
+      busy(btn, true);
+      api('chk.assign', { id: id, date: date, items: items, to: to, note: val('#note', el) })
+        .then(function (r) { close(); toast(r.message, 'ok'); after && after(); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    } }] });
+  cached('users', function () { return api('chk.users'); }).then(function (users) {
+    $('.modal-b', m.el).innerHTML = userPicker(users, false) + '<div class="field mt"><label>Note (optional)</label><input class="inp" id="note" placeholder="e.g. Umesh is on leave today"></div>';
+    bindUserPicker(m.el);
+  }).catch(function (e) { $('.modal-b', m.el).innerHTML = errHtml(e); });
+}
+
+/* ---------------- MY DELEGATED TASKS ---------------- */
+V.tasks = function (el, p) {
+  var f = (p && p.tab) || 'open', ap = !!S.boot.perms.dlgApprove, data = null, A = null;
+  var tabs = [['open', 'Open'], ['wait', 'Pending with EA'], ['done', 'Done'], ['all', 'All']];
+  if (ap) tabs.unshift(['approve', 'To approve']);
+  if (ap && !(p && p.tab)) f = 'approve';
+  el.innerHTML = pageHead('My Delegated Tasks', '') + tabsHtml(tabs, f) + '<div id="tb">' + loadingHtml() + '</div>';
+  bindTabs(el, function (t) { f = t; S.params.tab = t; render(); });
+  load(false);
+  function load(quiet) {
+    live('task.mine', {}, function (d) { data = d; render(); }, { el: $('#tb', el), busy: true, quiet: quiet }).catch(function (e) { $('#tb', el).innerHTML = errHtml(e); });
+    if (ap) live('task.approveList', {}, function (d) { A = d; render(); }, { quiet: true }).catch(function (e) { if (f === 'approve') $('#tb', el).innerHTML = errHtml(e); });
+  }
+  function render() {
+    if (f === 'approve') return approve();
+    if (!data) return;
+    var list = data.tasks.filter(function (t) {
+      if (f === 'open') return t.open;
+      if (f === 'wait') return t.waiting;
+      if (f === 'done') return t.done;
+      return true;
+    });
+    $('#tb', el).innerHTML = list.length ? '<div class="list">' + list.map(function (t) {
+      return '<div class="li"><div class="top"><div class="grow"><div class="row gap6">' + chip(t.statusText, t.done ? 'green' : t.waiting ? 'violet' : t.status === 'Reopened' ? 'red' : 'orange') +
+        chip(t.priority, t.priority === 'High' ? 'red' : t.priority === 'Low' ? 'grey' : 'blue') + (t.overdue ? chip('Overdue', 'red') : '') + '<span class="small muted">' + h(t.id) + '</span></div>' +
+        '<div class="title mt" style="margin-top:6px">' + h(t.title) + '</div>' + (t.desc ? '<div class="small" style="white-space:pre-line">' + h(t.desc) + '</div>' : '') +
+        '<div class="small muted mt" style="margin-top:6px">From ' + h(t.byName || '—') + ' · ' + h(t.created) + (t.dueText ? ' · Due <b>' + h(t.dueText) + '</b>' : '') + '</div>' +
+        (t.assigneeRemarks ? '<div class="small mt" style="margin-top:4px;white-space:pre-line">' + icon('edit_note') + ' ' + h(t.assigneeRemarks) + '</div>' : '') +
+        (t.link ? '<div class="small"><a href="' + h(t.link) + '" target="_blank" rel="noopener">' + icon('link') + ' ' + h(t.link) + '</a></div>' : '') +
+        (t.delegatorRemarks ? '<div class="small" style="white-space:pre-line;color:var(--violet)">' + icon('chat') + ' ' + h(t.delegatorRemarks) + '</div>' : '') +
+        (t.done && t.approvedBy ? '<div class="small muted">Approved by ' + h(t.approvedBy) + (t.approved ? ' · ' + h(t.approved) : '') + '</div>' : '') + '</div></div>' +
+        '<div class="row mt">' + (t.fileId ? '<button class="btn sm ghost" data-file="' + h(t.id) + '">' + icon('attach_file') + 'Attachment</button>' : '') +
+        (t.open && t.status !== 'In Progress' ? '<button class="btn sm soft" data-start="' + h(t.id) + '">' + icon('play_arrow') + 'Start</button>' : '') +
+        (t.open && has('tickets') ? '<button class="btn sm amber" data-iss="' + h(t.id) + '">' + icon('report_problem') + 'Raise issue</button>' : '') +
+        (t.open ? '<button class="btn sm green" data-fin="' + h(t.id) + '">' + icon('done_all') + 'Done</button>' : '') + '</div></div>';
+    }).join('') + '</div>' : '<div class="card">' + emptyHtml('task_alt', { open: 'No open task.', wait: 'Nothing is waiting for the EA.', done: 'Nothing done yet.', all: 'No task given to you.' }[f]) + '</div>';
+    $$('[data-file]', el).forEach(function (b) { b.onclick = function () { viewFile('task', b.dataset.file, 'Attachment'); }; });
+    $$('[data-iss]', el).forEach(function (b) {
+      b.onclick = function () { var t = data.tasks.filter(function (x) { return x.id === b.dataset.iss; })[0]; if (t) raiseTicket({ task: { id: t.id, title: t.title }, subject: t.title, outletId: t.outletId || '' }); };
+    });
+    $$('[data-start]', el).forEach(function (b) { b.onclick = function () { busy(b, true); api('task.update', { id: b.dataset.start, status: 'In Progress' }).then(function (r) { toast(r.message, 'ok'); load(true); }).catch(function (e) { busy(b, false); toast(e.message, 'bad'); }); }; });
+    $$('[data-fin]', el).forEach(function (b) {
+      b.onclick = function () { var t = data.tasks.filter(function (x) { return x.id === b.dataset.fin; })[0]; taskDoneModal(t, function () { settle(b.closest('.li')); load(true); }); };
+    });
+  }
+  function approve() {
+    var box = $('#tb', el);
+    if (!A) { box.innerHTML = loadingHtml(); return; }
+    box.innerHTML = '<div class="section-title">Waiting for your approval (' + A.waiting.length + ')</div><div id="taW"></div><div id="taBar"></div>' +
+      '<div class="section-title">Approved in ' + h(A.month) + ' (' + A.recent.length + ')</div><div id="taR"></div>';
+    var pickedNow = [];
+    recList($('#taW', box), A.waiting, {
+      title: function (t) { return h(t.title); },
+      sub: function (t) { return h([t.id, t.toName, t.completed ? 'done ' + t.completed : '', t.byName ? 'from ' + t.byName : ''].filter(Boolean).join(' · ')); },
+      right: function (t) { return t.own ? chip('Your own task', 'grey') : chip('Pending with EA', 'violet'); },
+      check: function (t) { return !t.own; },
+      onCheck: function (L) { pickedNow = L; bar(); },
+      body: function (b, t) {
+        b.innerHTML = kvHtml([['Task ID', t.id], ['Doer', t.toName], ['From', t.byName], ['Due', t.dueText], ['Marked done', t.completed], ['Remark', t.assigneeRemarks],
+            t.link ? ['Link', '<a href="' + h(t.link) + '" target="_blank" rel="noopener">' + h(t.link) + '</a>', true] : null, t.desc ? ['Details', t.desc] : null]) +
+          '<div class="row gap6 mt">' + (t.fileId ? '<button class="btn sm ghost" data-af>' + icon('attach_file') + 'Attachment</button>' : '') + '<span class="grow"></span>' +
+          (t.own ? '' : '<button class="btn sm ghost" data-ab>' + icon('undo') + 'Send back</button><button class="btn sm green" data-ao>' + icon('verified') + 'Approve</button>') + '</div>';
+        if ($('[data-af]', b)) $('[data-af]', b).onclick = function (e) { e.stopPropagation(); viewFile('task', t.id, 'Attachment'); };
+        if ($('[data-ao]', b)) $('[data-ao]', b).onclick = function (e) { e.stopPropagation(); decide([t], 'approve'); };
+        if ($('[data-ab]', b)) $('[data-ab]', b).onclick = function (e) { e.stopPropagation(); decide([t], 'return'); };
+      },
+      empty: 'Nothing is waiting for your approval.', emptyIcon: 'verified'
+    });
+    recList($('#taR', box), A.recent, { title: function (t) { return h(t.title); }, sub: function (t) { return h([t.id, t.toName, 'approved ' + t.approved].join(' · ')); },
+      right: function () { return chip('Done', 'green'); }, empty: 'Nothing approved this month yet.', emptyIcon: 'task_alt' });
+    function bar() {
+      var b0 = $('#taBar', box);
+      b0.innerHTML = pickedNow.length ? '<div class="bulkbar"><span class="grow">' + pickedNow.length + ' ticked</span><button class="btn sm ghost" data-bb style="color:#fff;border-color:rgba(255,255,255,.4)">' + icon('undo') + 'Send back</button>' +
+        '<button class="btn sm green" data-bo>' + icon('verified') + 'Approve</button></div>' : '';
+      if (!pickedNow.length) return;
+      $('[data-bo]', b0).onclick = function () { decide(pickedNow, 'approve'); };
+      $('[data-bb]', b0).onclick = function () { decide(pickedNow, 'return'); };
+    }
+    function decide(L, dec) {
+      var run = function (rm, btn, close) {
+        busy(btn, true);
+        api('task.approve', { ids: L.map(function (t) { return t.id; }), decision: dec, remark: rm || '' }).then(function (r) {
+          if (close) close(); toast(r.message, 'ok'); dcDel('task.approveList', {}); A = null; load(true); render();
+        }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      };
+      modal({ title: (dec === 'approve' ? 'Approve ' : 'Send back ') + L.length + ' task(s)', body: '<div class="small muted mb">' + h(L.map(function (t) { return t.title; }).slice(0, 5).join(' · ')) + (L.length > 5 ? ' …' : '') + '</div>' +
+          '<div class="field"><label>' + (dec === 'approve' ? 'Remark (optional)' : 'What is missing? *') + '</label><textarea class="inp" data-k="rm" rows="3"></textarea></div>',
+        actions: [{ label: 'Cancel', cls: 'ghost' }, { label: dec === 'approve' ? icon('verified') + 'Approve' : icon('undo') + 'Send back', cls: dec === 'approve' ? 'green' : 'amber', click: function (close, m, btn) {
+          var rm = val('[data-k="rm"]', m); if (dec === 'return' && !rm) return toast('Write what is missing.', 'bad');
+          run(rm, btn, close);
+        } }] });
+    }
+  }
+};
+
+/* ---------------- DELEGATE TASKS ---------------- */
+V.delegate = function (el, p) {
+  var mode = 'mine';
+  el.innerHTML = pageHead('Delegate Tasks', '',
+    '<button class="btn" id="nt">' + icon('add') + 'New task</button>') +
+    (perm('super') || perm('director') || perm('dlgApprove') ? tabsHtml([['mine', 'Delegated by me'], ['all', 'Everyone\'s']], mode) : '') + '<div id="db">' + loadingHtml() + '</div>';
+  $('#nt', el).onclick = newTask;
+  bindTabs(el, function (t) { mode = t; load(); });
+  function load(quiet) {
+    var box = $('#db', el), m0 = mode;
+    live('task.sent', { all: mode === 'all' }, function (d) {
+      var list = d.tasks;
+      $('#db', el).innerHTML = list.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Task</th><th>To</th><th>Due</th><th>Status</th><th>Updates</th><th></th></tr>' +
+        list.map(function (t) {
+          return '<tr><td><div class="b">' + h(t.title) + '</div><div class="small muted">' + h(t.id) + ' · ' + h(t.created) + (mode === 'all' ? ' · by ' + h(t.byName) : '') + '</div></td>' +
+            '<td>' + h(t.toName) + '</td><td class="nowrap">' + h(t.dueText || '—') + (t.overdue ? '<br>' + chip('Overdue', 'red') : '') + '</td><td>' + chip(t.statusText, t.done ? 'green' : t.waiting ? 'violet' : t.cancelled ? 'grey' : 'orange') + '</td>' +
+            '<td class="small" style="max-width:260px;white-space:pre-line">' + h(t.assigneeRemarks || '') + (t.link ? '<br><a href="' + h(t.link) + '" target="_blank" rel="noopener">link</a>' : '') + (t.fileId ? '<br><a href="#" data-f="' + h(t.id) + '">attachment</a>' : '') + '</td>' +
+            '<td class="nowrap">' + (!t.done && !t.cancelled ? '<button class="btn sm soft" data-m="' + h(t.id) + '">Manage</button>' : '') + '</td></tr>';
+        }).join('') + '</table></div>' : '<div class="card">' + emptyHtml('forward_to_inbox', 'You have not delegated anything yet.') + '</div>';
+      $$('[data-f]', el).forEach(function (a) { a.onclick = function (e) { e.preventDefault(); viewFile('task', a.dataset.f, 'Attachment'); }; });
+      $$('[data-m]', el).forEach(function (b) { b.onclick = function () { manage(list.filter(function (t) { return t.id === b.dataset.m; })[0]); }; });
+    }, { box: box, quiet: quiet, alive: function () { return mode === m0; } }).catch(function (e) { $('#db', el).innerHTML = errHtml(e); });
+  }
+  function manage(t) {
+    var acts = [{ label: 'Cancel task', cls: 'red', click: act('cancel') }, { label: 'Move due date', cls: 'ghost', click: act('extend') }, { label: 'Reopen', cls: 'soft', click: act('reopen') }];
+    if (t.waiting && S.boot.perms.dlgApprove && t.to !== S.boot.user.uid) acts.push({ label: icon('verified') + 'Approve', cls: 'green', click: act('verify') });
+    modal({ title: t.title, body: '<div class="kv mb"><b>To</b><span>' + h(t.toName) + '</span><b>Status</b><span>' + h(t.statusText) + '</span><b>Due</b><span>' + h(t.dueText || '—') + '</span></div>' +
+        (t.waiting ? '<div class="note mb">' + icon('verified') + ' Marked done by the doer — the EA approves it.</div>' : '') +
+        '<div class="field"><label>Remark</label><textarea class="inp" id="rm"></textarea></div>' +
+        '<div class="field"><label>New due date (for "Move due date")</label><input type="date" class="inp" id="due" value="' + h(t.due || '') + '"></div>',
+      actions: acts });
+    function act(a) {
+      return function (close, m, btn) {
+        busy(btn, true);
+        api('task.manage', { id: t.id, action: a, remark: val('#rm', m), due: val('#due', m) })
+          .then(function (r) { close(); toast(r.message, 'ok'); load(true); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      };
+    }
+  }
+  function newTask() {
+    var pk;
+    var m = modal({ title: 'Delegate a task', wide: true, body: loadingHtml(), actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('send') + 'Delegate', click: function (close, el2, btn) {
+      var to = picked(el2);
+      if (!val('#tt', el2)) return toast('Write the task.', 'bad');
+      if (!to.length) return toast('Pick at least one person.', 'bad');
+      if (pk.busy()) return toast('Wait for the upload.');
+      busy(btn, true); var f = pk.get();
+      api('task.create', { title: val('#tt', el2), desc: val('#td', el2), to: to, due: val('#tdue', el2), priority: val('#tp', el2), fileId: f ? f.fileId : '' })
+        .then(function (r) { close(); toast(r.message, 'ok'); load(true); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    } }] });
+    cached('dusers', function () { return api('task.users'); }).then(function (users) {
+      $('.modal-b', m.el).innerHTML = '<div class="form-grid"><div class="field full"><label>Task *</label><input class="inp" id="tt" placeholder="What needs to be done"></div>' +
+        '<div class="field full"><label>Details</label><textarea class="inp" id="td"></textarea></div>' +
+        '<div class="field"><label>Due date</label><input type="date" class="inp" id="tdue" min="' + todayISO() + '"></div>' +
+        '<div class="field"><label>Priority</label><select class="inp" id="tp"><option>High</option><option selected>Medium</option><option>Low</option></select></div>' +
+        '<div class="full" id="fb"></div><div class="field full mt"><label>Assign to *</label>' + userPicker(users, true) + '</div></div>';
+      pk = filePicker($('#fb', m.el), 'task', { label: 'Attachment (optional)' });
+      bindUserPicker(m.el);
+    }).catch(function (e) { $('.modal-b', m.el).innerHTML = errHtml(e); });
+  }
+  load();
+  if (p && p.add) newTask();
+};
+</script>

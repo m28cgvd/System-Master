@@ -1,0 +1,330 @@
+<script>
+/* =====================================================================
+   HR · Salary Preparation (SGSPL Salary Master) · Salary Slips
+   ===================================================================== */
+
+/* ---------------- SALARY PREPARATION ---------------- */
+var PAY_EDIT = [['half', 'Half day', 'n'], ['wa', 'Absent', 'n'], ['paidLeave', 'Paid leave', 'n'], ['ot', 'O/T', 'm'], ['event', 'Event', 'm'], ['carry', 'Carry fwd', 'm'],
+  ['penalty', 'Penalty', 'm'], ['loan', 'Loan & adv.', 'f'], ['extras', 'Extras', 'm'], ['homeStay', 'Home stay', 'm'], ['uniform', 'Uniform dep.', 'm'], ['remark', 'Remark', 't'], ['pf', 'PF/ESIC', 't']];
+/** A cell value as a number — "=1000+500" (several advances) counts as 1500. */
+function payNum(v) {
+  var s = String(v == null ? '' : v).trim(); if (!s) return 0;
+  if (s.charAt(0) === '=') return s.slice(1).split('+').reduce(function (t, x) { return t + (Number(x.replace(/[^0-9.\-]/g, '')) || 0); }, 0);
+  return Number(s.replace(/[^0-9.\-]/g, '')) || 0;
+}
+/** Same maths as the month tab's formulas. */
+function payCalc(r, DAYS) {
+  var absent = payNum(r.wa) + payNum(r.half) / 2, full = DAYS - absent, paidFor = full + payNum(r.paidLeave), daily = payNum(r.salary) / DAYS;
+  var total = daily * paidFor + payNum(r.ot) + payNum(r.event) + payNum(r.carry);
+  var ded = payNum(r.penalty) + payNum(r.loan) + payNum(r.extras) + payNum(r.homeStay) + payNum(r.uniform);
+  return { full: full, absent: absent, paidFor: paidFor, daily: daily, total: total, ded: ded, net: total - ded };
+}
+function payPrep(el) {
+  el.innerHTML = '<div id="pyb">' + loadingHtml() + '</div>';
+  var M = null, P = null;
+  api('pay.meta').then(function (m) { M = m; start(); }).catch(function (e) { $('#pyb', el).innerHTML = errHtml(e); });
+  function start() {
+    var b = $('#pyb', el);
+    b.innerHTML = '<div class="card"><div class="filters"><span class="b">Month</span><input type="month" class="inp sm" id="pm" value="' + h(M.suggest) + '">' +
+      '<button class="btn" id="pgo">' + icon('calculate') + 'Prepare</button><span class="grow"></span><a class="btn sm ghost" href="' + h(M.url) + '" target="_blank">' + icon('table_chart') + 'Salary Master</a></div>' +
+      (M.attendance ? '' : '<div class="warn mt">' + icon('warning') + ' No attendance workbook set.</div>') +
+      '<div class="row gap6 mt"><span class="small muted">Month tabs:</span>' + M.tabs.slice(0, 8).map(function (t) { return chip(t.name, 'grey'); }).join('') + '</div></div>' +
+      '<div id="pw" class="mt"></div>' +
+      (M.runs.length ? '<div class="section-title">Prepared here</div>' + tableHtml([{ t: 'Month', k: 'month' }, { t: 'Tab', k: 'tab' }, { t: 'People', cls: 'num', k: 'employees' },
+        { t: 'Net pay', cls: 'num', f: function (r) { return money(r.net); } }, { t: 'By', f: function (r) { return '<span class="small">' + h(r.by) + '<div class="muted">' + h(r.at) + '</div></span>'; } }], M.runs) : '');
+    $('#pgo', b).onclick = function () { preview(val('#pm', b), this); };
+  }
+  function preview(ym, btn) {
+    if (!/^\d{4}-\d{2}$/.test(ym)) return toast('Pick the month.', 'bad');
+    busy(btn, true, 'Pre-filling…');
+    $('#pw', el).innerHTML = loadingHtml('Reading the master, last month, attendance and advances…');
+    api('pay.preview', { month: ym }).then(function (d) { busy(btn, false); P = d; grid(); })
+      .catch(function (e) { busy(btn, false); $('#pw', el).innerHTML = errHtml(e); });
+  }
+  function grid() {
+    var w = $('#pw', el), DAYS = P.days, secs = [];
+    P.rows.forEach(function (r) { if (secs.indexOf(r.section) < 0) secs.push(r.section); });
+    var head = '<tr><th></th><th>Name</th><th>Designation</th><th class="num">Salary</th>' + PAY_EDIT.map(function (c) { return '<th class="' + (c[2] === 't' ? '' : 'num') + '">' + h(c[1]) + '</th>'; }).join('') +
+      '<th class="num">Paid for</th><th class="num">Total</th><th class="num">Deduction</th><th class="num">Net</th><th></th></tr>';
+    function rowHtml(r, i) {
+      return '<tr data-i="' + i + '"><td class="small muted">' + (r.fromPrev ? '' : '<span title="New this month (not on last month\'s tab)" class="chip mini green">new</span>') + '</td>' +
+        '<td><input class="w" data-k="name" value="' + h(r.name) + '"><div class="tiny muted">' + h(r.empId || 'no ID') + (r.hasAtt ? '' : (r.attDays ? ' · <span style="color:var(--orange)">no punches</span>' : '')) + '</div></td>' +
+        '<td><input class="m" data-k="designation" value="' + h(r.designation) + '"></td><td><input data-k="salary" value="' + h(r.salary) + '" style="width:80px"></td>' +
+        PAY_EDIT.map(function (c) {
+          var v = r[c[0]] == null ? '' : r[c[0]], t = c[0] === 'penalty' && r.penaltyLines && r.penaltyLines.length ? ' title="' + h(r.penaltyLines.join('\n')) + '"' : c[0] === 'loan' && (r.loanLines && r.loanLines.length) ? ' title="' + h(r.loanLines.join('\n')) + '"' : c[0] === 'loan' && r.loanTotal ? ' title="Advances approved: ' + h(String(r.loan)) + '"' : '';
+          var pfi = c[0] === 'pf' && r.pfInfo ? '<div class="tiny muted nowrap">' + (r.pfInfo.on ? 'PF ' + money(r.pfInfo.pf) + ' · ESIC ' + money(r.pfInfo.esic) : 'PF: No') + '</div>' : '';
+          return '<td><input data-k="' + c[0] + '" value="' + h(v) + '"' + t + (c[2] === 't' ? ' class="m"' : '') + (c[2] === 'f' ? ' style="width:90px"' : '') + '>' + pfi + '</td>';
+        }).join('') + '<td class="num" data-o="paidFor"></td><td class="num" data-o="total"></td><td class="num" data-o="ded"></td><td class="num b" data-o="net"></td>' +
+        '<td><button class="icon-btn" data-x="' + i + '" title="Leave out of this month">' + icon('remove_circle_outline') + '</button></td></tr>';
+    }
+    w.innerHTML = (P.exists ? '<div class="warn mb">' + icon('warning') + ' <b>' + h(P.tab) + '</b> already exists in the Salary Master — rename or delete it there before creating it again. You can still review the numbers.</div>' : '') +
+      (P.notes.length ? '<div class="note mb">' + P.notes.map(h).join('<br>') + '</div>' : '') +
+      '<div class="kpis mb" id="pk"></div>' +
+      (P.notGoing.length ? '<details class="card mb"><summary class="b" style="cursor:pointer">' + icon('person_off') + ' ' + P.notGoing.length + ' person(s) on ' + h(P.prevTab) + ' are not active any more — not carried over</summary><div class="small mt">' + P.notGoing.map(h).join(' · ') + '</div></details>' : '') +
+      '<div class="small muted mb">' + h(P.label) + ' · <b>' + DAYS + ' days</b></div>' +
+      '<div class="tbl-wrap" style="max-height:66vh;overflow:auto"><table class="tbl grid-edit" id="pgt"><thead>' + head + '</thead><tbody>' +
+      secs.map(function (s) {
+        return '<tr class="sec-row"><td colspan="' + (PAY_EDIT.length + 9) + '">' + h(s) + ' <button class="btn sm ghost" data-add="' + h(s) + '" style="margin-left:8px;min-height:26px;padding:2px 8px">' + icon('add') + 'Add a person</button></td></tr>' +
+          P.rows.map(function (r, i) { return r.section === s && !r.out ? rowHtml(r, i) : ''; }).join('') +
+          '<tr class="sum-row" data-sum="' + h(s) + '"><td></td><td colspan="2">TOTAL ' + h(s) + '</td><td class="num" data-t="salary"></td><td colspan="' + PAY_EDIT.length + '"></td><td></td><td class="num" data-t="total"></td><td class="num" data-t="ded"></td><td class="num" data-t="net"></td><td></td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div class="card mt"><div class="row"><label class="check"><input type="checkbox" id="ppen" checked> Also write a "Penalty" tab with every penalty line</label><span class="grow"></span>' +
+      '<button class="btn green" id="pcr"' + (P.exists ? ' disabled' : '') + '>' + icon('send') + 'Submit ' + h(P.tab) + ' to the Salary Master</button></div></div>';
+    function totals() {
+      var g = { n: 0, salary: 0, total: 0, ded: 0, net: 0, pen: 0, loan: 0 }, per = {};
+      P.rows.forEach(function (r, i) {
+        if (r.out) return;
+        var c = payCalc(r, DAYS), tr = $('tr[data-i="' + i + '"]', w);
+        if (tr) { $('[data-o=paidFor]', tr).textContent = num(Math.round(c.paidFor * 10) / 10); $('[data-o=total]', tr).textContent = num(Math.round(c.total)); $('[data-o=ded]', tr).textContent = num(Math.round(c.ded)); $('[data-o=net]', tr).textContent = num(Math.round(c.net)); }
+        var s = per[r.section] = per[r.section] || { salary: 0, total: 0, ded: 0, net: 0 };
+        s.salary += payNum(r.salary); s.total += c.total; s.ded += c.ded; s.net += c.net;
+        g.n++; g.salary += payNum(r.salary); g.total += c.total; g.ded += c.ded; g.net += c.net; g.pen += payNum(r.penalty); g.loan += payNum(r.loan);
+      });
+      Object.keys(per).forEach(function (k) {
+        var tr = $$('tr[data-sum]', w).filter(function (t) { return t.dataset.sum === k; })[0]; if (!tr) return;
+        ['salary', 'total', 'ded', 'net'].forEach(function (f) { $('[data-t=' + f + ']', tr).textContent = num(Math.round(per[k][f])); });
+      });
+      $('#pk', w).innerHTML = kpiLite('People', g.n) + kpiLite('Total salary', money(Math.round(g.total)), 'brown') + kpiLite('Deductions', money(Math.round(g.ded)), 'red', 'penalty ' + money(Math.round(g.pen)) + ' · advances ' + money(Math.round(g.loan))) +
+        kpiLite('Net to pay', money(Math.round(g.net)), 'green', P.attendanceDays + ' day(s) of attendance used');
+    }
+    function kpiLite(l, v, cls, s) { return '<div class="kpi ' + (cls || '') + '"><div class="l">' + h(l) + '</div><div class="v">' + v + '</div>' + (s ? '<div class="s">' + h(s) + '</div>' : '') + '</div>'; }
+    $$('#pgt input', w).forEach(function (inp) {
+      inp.oninput = function () { var tr = inp.closest('tr'), i = +tr.dataset.i; P.rows[i][inp.dataset.k] = inp.value; tr.classList.add('dirty'); recalc(); };
+    });
+    var recalc = debounce(totals, 120);
+    $$('[data-x]', w).forEach(function (x) { x.onclick = function () { var i = +x.dataset.x; P.rows[i].out = true; x.closest('tr').remove(); totals(); toast(P.rows[i].name + ' left out of this month.'); }; });
+    $$('[data-add]', w).forEach(function (x) {
+      x.onclick = function () {
+        var s = x.dataset.add, last = -1;
+        P.rows.forEach(function (r, i) { if (r.section === s) last = i; });
+        var base = P.rows[last] || {};
+        P.rows.splice(last + 1, 0, { empId: '', section: s, sectionKey: base.sectionKey, order: base.order, prefix: base.prefix || '', name: '', designation: '', salary: '', half: 0, wa: 0,
+          paidLeave: 0, ot: '', event: '', carry: '', penalty: '', penaltyLines: [], remark: '', loan: '', extras: '', homeStay: '', uniform: '', pf: '', fromPrev: true });
+        grid();
+      };
+    });
+    $('#pcr', w).onclick = function () {
+      var rows = P.rows.filter(function (r) { return !r.out && String(r.name).trim() && payNum(r.salary) > 0; });
+      var net = rows.reduce(function (t, r) { return t + payNum(payCalc(r, DAYS).net); }, 0), btn = this;
+      confirmBox('Submit ' + h(P.tab) + '?', '<b>' + rows.length + '</b> people · net pay <b>' + money(Math.round(net)) + '</b> are written to the SGSPL Salary Master as a new tab, with the same formulas as last month. Nothing is written until you confirm.', 'Confirm & submit').then(function (ok) {
+        if (!ok) return;
+        busy(btn, true, 'Writing the tab…');
+        api('pay.create', { month: P.month, rows: rows, penaltySheet: $('#ppen', w).checked }).then(function (r) {
+          busy(btn, false); P.exists = true; btn.disabled = true;
+          modal({ title: 'Salary tab created', body: '<div class="okbox">' + icon('check_circle') + ' ' + h(r.message) + '</div><p class="small muted">Check it in the sheet, then make the salary slips from Salary Slips.</p>',
+            actions: [{ label: 'Close', cls: 'ghost' }, { label: icon('open_in_new') + 'Open the tab', click: function (c) { window.open(r.url, '_blank'); c(); } }] });
+        }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      });
+    };
+    totals();
+  }
+}
+
+/* ---------------- SALARY SLIPS ---------------- */
+V.salary_slips = function (el) { el.innerHTML = pageHead('Salary Slips', '') + '<div id="ssw"></div>'; slipPanel($('#ssw', el)); };
+var SLIP_PARTS = [['details', 'Employee details'], ['earnings', 'Earnings'], ['deductions', 'Deductions']];
+function slipPanel(el) {
+  el.innerHTML = '<div id="ssb">' + loadingHtml() + '</div>';
+  var M = null, L = null, sel = {}, edits = {}, extra = [], q = '';
+  api('slip.meta').then(function (m) {
+    M = m;
+    var b = $('#ssb', el);
+    if (!m.tabs.length) { b.innerHTML = '<div class="card">' + emptyHtml('receipt', 'No month tab was found in the Salary Master.') + '</div>'; return; }
+    b.innerHTML = '<div class="fbar"><div class="ff"><label>Month</label><select class="inp sm" id="st">' + m.tabs.map(function (t) { return '<option>' + h(t.name) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="ff grow"><label>Search</label><input class="inp sm" id="sq" placeholder="Name, ID, location…"></div>' +
+      '<button class="btn sm ghost" id="sfx">' + icon('playlist_add') + 'Fields on every slip <span class="chip mini grey" id="sfn">0</span></button></div><div id="sw"></div><div id="sbar"></div>';
+    $('#st', b).onchange = load;
+    $('#sq', b).oninput = debounce(function () { q = val('#sq', b).toLowerCase(); people(); }, 150);
+    $('#sfx', b).onclick = fieldsModal;
+    load();
+  }).catch(function (e) { $('#ssb', el).innerHTML = errHtml(e); });
+  function load() {
+    var w = $('#sw', el); w.innerHTML = loadingHtml('Reading ' + val('#st', el) + '…'); sel = {}; edits = {};
+    api('slip.load', { tab: val('#st', el) }).then(function (d) { L = d; people(); }).catch(function (e) { w.innerHTML = errHtml(e); });
+  }
+  function list() { return L.rows.filter(function (r) { return !q || (r.name + ' ' + r.empName + ' ' + r.empId + ' ' + r.section + ' ' + r.designation).toLowerCase().indexOf(q) >= 0; }); }
+  function picked() { return L.rows.filter(function (r) { return sel[r.row]; }); }
+  function people() {
+    var w = $('#sw', el), rows = list();
+    w.innerHTML = '<div class="row small muted mb"><label class="check"><input type="checkbox" id="sall"> Select all</label><span class="grow"></span><span>' + h(L.month) + ' · ' + L.rows.length + ' people' +
+      (L.unmatched ? ' · <span style="color:var(--orange)">' + L.unmatched + ' not linked</span>' : '') + '</span></div>' +
+      (rows.length ? '<div class="recs">' + rows.map(function (r) {
+        return '<div class="rec" data-r="' + r.row + '"><div class="rec-h"><input type="checkbox" class="rc" data-sel="' + r.row + '"' + (sel[r.row] ? ' checked' : '') + '>' +
+          '<div class="rm"><b>' + h(r.empName || r.name) + (edits[r.row] ? ' <span class="chip mini blue">edited</span>' : '') + '</b><span class="tiny muted">' + h([r.empId || 'not linked', r.designation, r.section].filter(Boolean).join(' · ')) + '</span></div>' +
+          '<div class="rr"><b>' + money(r.values.net) + '</b>' + icon('expand_more', 'rx') + '</div></div><div class="rec-b"></div></div>';
+      }).join('') + '</div>' : '<div class="card">' + emptyHtml('person_search', 'Nobody matches.') + '</div>');
+    $$('.rec', w).forEach(function (rc) {
+      var r = L.rows.filter(function (x) { return x.row === +rc.dataset.r; })[0];
+      $('.rec-h', rc).onclick = function (e) {
+        if (e.target.classList.contains('rc')) return;
+        if (rc.classList.toggle('open')) $('.rec-b', rc).innerHTML = kvHtml([['Name on the sheet', r.name], ['Employee', r.empId ? r.empName + ' · ' + r.empId + (r.how === 'Similar name' ? ' (guessed — check)' : '') : 'Not linked'],
+          ['Location', r.section], ['Days paid for', r.values.paidFor], ['Total', money(r.values.total)], ['Deduction', money(r.values.deduction)], ['Net', money(r.values.net)]]) +
+          '<div class="row gap6"><button class="btn sm ghost" data-map>' + icon('link') + (r.empId ? 'Change link' : 'Link to employee') + '</button><span class="grow"></span>' +
+          '<button class="btn sm soft" data-ed>' + icon('edit') + 'View & edit slip</button></div>';
+        if ($('[data-map]', rc)) $('[data-map]', rc).onclick = function () { mapModal(r); };
+        if ($('[data-ed]', rc)) $('[data-ed]', rc).onclick = function () { editor(r); };
+      };
+    });
+    $$('[data-sel]', w).forEach(function (c) { c.onchange = function () { sel[+c.dataset.sel] = c.checked; bar(); }; });
+    $('#sall', w).onchange = function () { var on = this.checked; rows.forEach(function (r) { sel[r.row] = on; }); people(); };
+    bar();
+  }
+  function bar() {
+    var n = picked().length, b = $('#sbar', el);
+    $('#sfn', el).textContent = extra.length;
+    if (!n) { b.innerHTML = ''; return; }
+    b.innerHTML = '<div class="bulk"><b>' + n + ' selected</b><label class="check"><input type="checkbox" id="sv"> Save in Drive</label><span class="grow"></span>' +
+      '<button class="btn sm soft" id="mg">' + icon('picture_as_pdf') + 'One PDF</button><button class="btn sm soft" id="ea">' + icon('folder_zip') + 'One PDF each</button></div>';
+    $('#mg', b).onclick = function () { make('merged', this); };
+    $('#ea', b).onclick = function () { make('each', this); };
+  }
+  function opts(mode, rows) {
+    return { tab: L.tab, rows: rows, fields: extra, mode: mode, save: mode === 'merged' && $('#sv', el) && $('#sv', el).checked,
+      models: rows.map(function (r) { return edits[r]; }).filter(Boolean) };
+  }
+  function fieldsModal() {
+    var list0 = extra.map(function (f) { return Object.assign({}, f); });
+    function rowsHtml() { return list0.map(function (f, i) {
+      return '<div class="row gap6 mb"><select class="inp sm" data-fp="' + i + '" style="width:auto">' + SLIP_PARTS.map(function (p0) { return '<option value="' + p0[0] + '"' + (p0[0] === f.part ? ' selected' : '') + '>' + h(p0[1]) + '</option>'; }).join('') + '</select>' +
+        '<input class="inp sm grow" data-fl="' + i + '" placeholder="Label" value="' + h(f.label) + '"><input class="inp sm" data-fv="' + i + '" placeholder="Value" value="' + h(f.value) + '" style="width:120px"><button class="icon-btn" data-fx="' + i + '">' + icon('delete') + '</button></div>'; }).join('') || '<div class="small muted mb">No extra field yet.</div>'; }
+    modal({ title: 'Fields on every slip', body: '<div data-fr></div><button class="btn sm ghost" data-fa>' + icon('add') + 'Add a field</button>',
+      onOpen: function (m) {
+        function paint() {
+          $('[data-fr]', m).innerHTML = rowsHtml();
+          $$('[data-fp]', m).forEach(function (x) { x.onchange = function () { list0[+x.dataset.fp].part = x.value; }; });
+          $$('[data-fl]', m).forEach(function (x) { x.oninput = function () { list0[+x.dataset.fl].label = x.value; }; });
+          $$('[data-fv]', m).forEach(function (x) { x.oninput = function () { list0[+x.dataset.fv].value = x.value; }; });
+          $$('[data-fx]', m).forEach(function (x) { x.onclick = function () { list0.splice(+x.dataset.fx, 1); paint(); }; });
+        }
+        $('[data-fa]', m).onclick = function () { list0.push({ part: 'details', label: '', value: '' }); paint(); };
+        paint();
+      },
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('check') + 'Use these fields', cls: 'green', click: function (close) { extra = list0.filter(function (f) { return f.label; }); close(); bar(); $('#sfn', el).textContent = extra.length; } }] });
+  }
+  function editor(r) {
+    var m = modal({ title: 'Salary slip · ' + (r.empName || r.name), wide: true, body: loadingHtml('Reading the slip…'), actions: [{ label: 'Close', cls: 'ghost' }] });
+    var got = edits[r.row] ? Promise.resolve(JSON.parse(JSON.stringify(edits[r.row]))) : api('slip.model', { tab: L.tab, row: r.row }).then(function (x) {
+      extra.forEach(function (f) { x[f.part].push([f.label, f.value, true]); }); return x; });
+    got.then(function (S0) {
+      var body = $('.modal-b', m.el);
+      function sum(list, all) { return list.reduce(function (t, l) { return t + ((all || l[2] !== false) ? (Number(String(l[1]).replace(/[^0-9.\-]/g, '')) || 0) : 0); }, 0); }
+      function part(key, title, money0) {
+        return '<div class="card mb"><div class="row mb"><h3 class="grow" style="margin:0">' + h(title) + '</h3><button class="btn sm ghost" data-add="' + key + '">' + icon('add') + 'Add a line</button></div>' +
+          S0[key].map(function (l, i) {
+            return '<div class="mb" style="display:grid;align-items:center;gap:6px;grid-template-columns:minmax(0,1fr) minmax(0,' + (money0 ? '110px' : '1fr') + ')' + (key === 'earnings' ? ' auto' : '') + ' auto"><input class="inp sm" data-l="' + key + '|' + i + '" value="' + h(l[0]) + '"><input class="inp sm" data-v="' + key + '|' + i + '" value="' + h(l[1]) + '"' + (money0 ? ' style="text-align:right"' : '') + '>' +
+              (key === 'earnings' ? '<label class="check tiny" title="Counts in the gross"><input type="checkbox" data-s="' + i + '"' + (l[2] !== false ? ' checked' : '') + '>in gross</label>' : '') +
+              '<button class="icon-btn" data-x="' + key + '|' + i + '">' + icon('close') + '</button></div>';
+          }).join('') + (money0 ? '<div class="row small b"><span class="grow">' + (key === 'earnings' ? 'Gross earned' : 'Total deductions') + '</span><span data-t="' + key + '"></span></div>' : '') + '</div>';
+      }
+      function paint() {
+        body.innerHTML = '<div class="card mb"><div class="form-grid"><div class="field"><label>Company name</label><input class="inp sm" data-c="company" value="' + h(S0.company) + '"></div>' +
+          '<div class="field"><label>Title</label><input class="inp sm" data-c="title" value="' + h(S0.title) + '"></div><div class="field full"><label>Logo link</label><input class="inp sm" data-c="logo" value="' + h(S0.logo || '') + '"></div></div></div>' +
+          part('details', 'Employee details', false) + '<div class="grid g2">' + part('earnings', 'Earnings', true) + part('deductions', 'Deductions', true) + '</div>' +
+          '<div class="okbox row"><b class="grow">Net pay</b><b data-net></b></div>';
+        $$('[data-c]', body).forEach(function (x) { x.oninput = function () { S0[x.dataset.c] = x.value; }; });
+        $$('[data-l]', body).forEach(function (x) { x.oninput = function () { var k = x.dataset.l.split('|'); S0[k[0]][+k[1]][0] = x.value; }; });
+        $$('[data-v]', body).forEach(function (x) { x.oninput = function () { var k = x.dataset.v.split('|'); S0[k[0]][+k[1]][1] = x.value; totals(); }; });
+        $$('[data-s]', body).forEach(function (x) { x.onchange = function () { S0.earnings[+x.dataset.s][2] = x.checked; totals(); }; });
+        $$('[data-x]', body).forEach(function (x) { x.onclick = function () { var k = x.dataset.x.split('|'); S0[k[0]].splice(+k[1], 1); paint(); }; });
+        $$('[data-add]', body).forEach(function (x) { x.onclick = function () { S0[x.dataset.add].push(['', '', true]); paint(); }; });
+        totals();
+      }
+      function totals() {
+        var g = sum(S0.earnings), d = sum(S0.deductions, true);
+        $('[data-t=earnings]', body).textContent = money(Math.round(g)); $('[data-t=deductions]', body).textContent = money(Math.round(d)); $('[data-net]', body).textContent = money(Math.round(g - d));
+      }
+      paint();
+      var foot = $('.modal-f', m.el);
+      if (foot) {
+        foot.innerHTML = '<button class="btn ghost" data-close>Close</button><button class="btn soft" data-keep>' + icon('save') + 'Keep changes</button><button class="btn green" data-pdf>' + icon('picture_as_pdf') + 'Download PDF</button>';
+        $('[data-close]', foot).onclick = function () { m.close(); };
+        $('[data-keep]', foot).onclick = function () { edits[r.row] = S0; m.close(); people(); toast('Kept — used when the slips are made.', 'ok'); };
+        $('[data-pdf]', foot).onclick = function () {
+          var bt = this; edits[r.row] = S0; busy(bt, true, 'Making…');
+          api('slip.pdf', { tab: L.tab, rows: [r.row], models: [S0], mode: 'merged' }).then(function (x) { busy(bt, false); var f = x.files[0]; downloadB64(f.b64, f.name, 'application/pdf'); people(); })
+            .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+        };
+      }
+    }).catch(function (e) { $('.modal-b', m.el).innerHTML = errHtml(e); });
+  }
+  function make(mode, btn) {
+    var rows = picked().map(function (r) { return r.row; });
+    if (!rows.length) return toast('Tick at least one person.', 'bad');
+    if (mode === 'merged') {
+      busy(btn, true, 'Making ' + rows.length + '…');
+      api('slip.pdf', opts('merged', rows)).then(function (r) { busy(btn, false); var f = r.files[0]; downloadB64(f.b64, f.name, 'application/pdf'); toast(f.name + (r.driveUrl ? ' · saved in Drive' : ''), 'ok'); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      return;
+    }
+    busy(btn, true, 'Preparing…');
+    loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js').then(function () {
+      var zip = new JSZip(), done = 0, parts = [];
+      for (var i = 0; i < rows.length; i += 20) parts.push(rows.slice(i, i + 20));
+      function next(k) {
+        if (k >= parts.length) return zip.generateAsync({ type: 'blob' }).then(function (blob) { busy(btn, false); saveBlob(blob, 'Salary Slips ' + L.tab + '.zip'); toast(done + ' slip(s) zipped.', 'ok'); });
+        btn.innerHTML = done + ' / ' + rows.length + '…';
+        return api('slip.pdf', opts('each', parts[k])).then(function (r) { r.files.forEach(function (f) { zip.file(f.name, f.b64, { base64: true }); done++; }); return next(k + 1); });
+      }
+      return next(0);
+    }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+  }
+  function mapModal(r) {
+    modal({ title: 'Link "' + r.name + '"', body: '<input class="inp sm mb" data-s placeholder="Search…" value="' + h(r.name.split(' ')[0]) + '"><div class="msel" data-l></div>',
+      onOpen: function (m) {
+        function paint() {
+          var qq = val('[data-s]', m).toLowerCase();
+          $('[data-l]', m).innerHTML = L.people.filter(function (p) { return !qq || (p.name + ' ' + p.id + ' ' + p.location).toLowerCase().indexOf(qq) >= 0; }).slice(0, 80).map(function (p) {
+            return '<label><input type="radio" name="sp" value="' + h(p.id) + '"' + (p.id === r.empId ? ' checked' : '') + '><span class="grow"><b>' + h(p.name) + '</b> <span class="small muted">' + h(p.id + ' · ' + p.location) + (p.active ? '' : ' · left') + '</span></span></label>';
+          }).join('') || '<div class="empty">Nobody matches.</div>';
+        }
+        $('[data-s]', m).oninput = debounce(paint, 120); paint();
+      },
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('link') + 'Link', click: function (close, m, btn) {
+        var p = $('input[name=sp]:checked', m); if (!p) return toast('Pick the employee.', 'bad');
+        busy(btn, true);
+        api('slip.map', { name: r.name, empId: p.value }).then(function (res) { close(); toast(res.message, 'ok'); load(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+}
+
+V.payroll = function (el, p) {
+  var view = p.view || '', nav = S.nav, A = has('hr_attendance');
+  el.innerHTML = pageHead('Payroll', '', A ? '<button class="btn sm ghost" id="prR">' + icon('sync') + 'Refresh</button>' : '') + '<div id="prB"></div>';
+  var B = $('#prB', el);
+  if ($('#prR', el)) $('#prR', el).onclick = function () {
+    var b = this; busy(b, true, 'Refreshing…');
+    api('at.refresh').then(function (r) { busy(b, false); toast(r.message, 'ok'); delete S.cache.atBoot; delete S.cache.atEmps; delete S.cache.penMeta; dcDel('at.hub', {}); show(); })
+      .catch(function (e) { busy(b, false); toast(e.message, 'bad'); });
+  };
+  function back() { view = ''; delete S.params.view; show(); }
+  function show() {
+    if (view) return open(view);
+    B.innerHTML = (A ? '<div id="prQ"></div><div class="section-title">Attendance</div><div id="prA"></div>' : '') + '<div class="section-title">Salary</div><div id="prS"></div>';
+    var sal = [];
+    if (has('payroll')) sal.push({ key: 'prep', icon: 'calculate', label: 'Salary preparation', value: icon('chevron_right'), sub: 'Pre-filled · edit · submit to the SGSPL sheet' });
+    if (has('salary_slips')) sal.push({ key: 'slips', icon: 'receipt', label: 'Salary slips', value: icon('chevron_right'), sub: 'Company · employee · salary breakup' });
+    if (has('reports')) sal.push({ key: 'reports', icon: 'summarize', label: 'Reports', value: icon('chevron_right'), sub: 'Attendance, penalty, overtime, leave, advances' });
+    hubCards($('#prS', B), sal, open);
+    if (!A) return;
+    function paint(d) {
+      if (!document.body.contains(B) || view) return;
+      atQuickBtns($('#prQ', B), d, open);
+      hubCards($('#prA', B), atCards(d), open);
+    }
+    paint(null);
+    live('at.hub', {}, paint, { alive: function () { return S.nav === nav && !view; } }).catch(function (e) { $('#prA', B).innerHTML = errHtml(e); });
+  }
+  function open(v) {
+    if (['upload', 'last', 'penalty', 'lastpen', 'ot', 'data', 'give', 'rules', 'unapproved', 'exceptions'].indexOf(v) >= 0) return go('hr_attendance', { view: v, back: 'payroll' });
+    if (v === 'reports') return go('reports', { back: 'payroll' });
+    if (v === 'employees' || v === 'birthdays') return go(v === 'employees' ? 'employees' : 'dashboard', {});
+    view = v; S.params.view = v;
+    var T = { prep: ['Salary preparation', 'calculate'], slips: ['Salary slips', 'receipt'] }[v] || ['Payroll', 'payments'];
+    var b = hubPanel(B, T[0], T[1], back);
+    if (v === 'prep') return payPrep(b);
+    if (v === 'slips') return slipPanel(b);
+    back();
+  }
+  show();
+};
+</script>

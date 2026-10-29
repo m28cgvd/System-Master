@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="theme-color" content="#FBF6EE">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,450,0..1,0&display=block" rel="stylesheet">
+  <?!= include('Styles'); ?>
+  <style>
+    body{background:radial-gradient(1200px 600px at 10% -10%,#FCE7B8 0,transparent 60%),var(--bg)}
+    .jwrap{max-width:860px;margin:0 auto;padding:22px 14px 60px}
+    .jhead{display:flex;gap:14px;align-items:center;margin-bottom:16px}
+    .jhead img{height:62px;width:62px;object-fit:contain}
+    .jhead h1{margin:0;font-size:22px;color:var(--brown)}
+    .jhead p{margin:2px 0 0;color:var(--muted)}
+    .step{display:flex;gap:10px;align-items:center;margin:0 0 12px;font-weight:700;color:var(--brown)}
+    .step .n{width:28px;height:28px;border-radius:50%;background:var(--brown);color:#fff;display:grid;place-items:center;font-size:13px}
+    .req{color:var(--red)}
+    .hint2{font-size:12px;color:var(--muted);margin-top:-8px;margin-bottom:12px}
+    .up{border:1.5px dashed var(--cream2);border-radius:12px;padding:12px;background:#FFFCF6;display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+    .up img{height:56px;width:56px;object-fit:cover;border-radius:9px;border:1px solid var(--line)}
+    .up .st{font-size:12px;color:var(--muted)}
+    .done{text-align:center;padding:30px 18px}
+    .done .ms{font-size:56px;color:var(--green)}
+    .code{display:inline-block;font-size:26px;font-weight:800;color:var(--brown);background:var(--cream);border:1px solid var(--cream2);border-radius:12px;padding:8px 18px;margin:10px 0}
+  </style>
+</head>
+<body>
+<div class="jwrap" id="app">
+  <div class="jhead"><img src="<?= logo ?>" alt="" onerror="this.style.display='none'"><div><h1>New Employee Joining Form</h1><p><?= appName ?> · नया कर्मचारी जॉइनिंग फॉर्म</p></div></div>
+  <div class="card" id="loading"><div class="empty"><div class="spinner" style="margin:0 auto 10px"></div>Loading…</div></div>
+</div>
+<script>
+function $(s, r) { return (r || document).querySelector(s); }
+function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+function h(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function icon(n) { return '<span class="ms">' + n + '</span>'; }
+function call(action, data) {
+  return new Promise(function (res, rej) {
+    google.script.run.withSuccessHandler(function (t) { var r; try { r = JSON.parse(t); } catch (e) { return rej(new Error('Unexpected reply.')); } r.ok ? res(r.data) : rej(new Error(r.error || 'Something went wrong.')); })
+      .withFailureHandler(function (e) { rej(new Error((e && e.message) || 'No connection — please try again.')); })
+      .api({ action: action, data: data || {} });
+  });
+}
+var FILES = { aadharFront: null, aadharBack: null, panCard: null, additionalDocs: [] };
+function shrink(file) {
+  return new Promise(function (res, rej) {
+    if (file.size > 12 * 1048576) return rej(new Error('"' + file.name + '" is larger than 12 MB.'));
+    if (!/^image\//.test(file.type) || /gif|svg/.test(file.type)) {
+      if (file.type !== 'application/pdf' && !/^image\//.test(file.type)) return rej(new Error('Only photos or PDF files, please.'));
+      var r = new FileReader(); r.onload = function () { res({ name: file.name, mime: file.type, data: String(r.result).split(',')[1] }); }; r.onerror = function () { rej(new Error('Could not read the file.')); }; r.readAsDataURL(file); return;
+    }
+    var url = URL.createObjectURL(file), img = new Image();
+    img.onload = function () {
+      var s = Math.min(1, 1800 / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      res({ name: (file.name || 'photo').replace(/\.\w+$/, '') + '.jpg', mime: 'image/jpeg', data: c.toDataURL('image/jpeg', 0.85).split(',')[1], preview: c.toDataURL('image/jpeg', 0.5) });
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); rej(new Error('Could not read the photo.')); };
+    img.src = url;
+  });
+}
+function upBox(key, label, required, multi) {
+  return '<div class="up" data-up="' + key + '"><div class="grow"><div class="b small">' + label + (required ? ' <span class="req">*</span>' : '') + '</div><div class="st">Photo or PDF</div></div>' +
+    '<label class="btn sm soft">' + icon('photo_camera') + 'Camera<input type="file" accept="image/*" capture="environment" hidden' + (multi ? ' multiple' : '') + '></label>' +
+    '<label class="btn sm ghost">' + icon('upload') + 'Upload<input type="file" accept="image/*,application/pdf" hidden' + (multi ? ' multiple' : '') + '></label></div>';
+}
+function field(id, label, opt) {
+  opt = opt || {};
+  var inner = opt.select ? '<select class="inp" id="' + id + '">' + opt.select + '</select>'
+    : opt.area ? '<textarea class="inp" id="' + id + '" rows="2" placeholder="' + h(opt.ph || '') + '"></textarea>'
+    : '<input class="inp" id="' + id + '" type="' + (opt.type || 'text') + '"' + (opt.mode ? ' inputmode="' + opt.mode + '"' : '') + (opt.max ? ' maxlength="' + opt.max + '"' : '') + ' placeholder="' + h(opt.ph || '') + '">';
+  return '<div class="field' + (opt.full ? ' full' : '') + '"><label for="' + id + '">' + label + (opt.req ? ' <span class="req">*</span>' : '') + '</label>' + inner + '</div>';
+}
+function opts(list, blank) { return (blank ? '<option value="">' + blank + '</option>' : '') + list.map(function (x) { return '<option>' + h(x) + '</option>'; }).join(''); }
+function address(p) {
+  return field(p + 'Area', 'House / street / area · मकान / मोहल्ला', { req: true, full: true }) + field(p + 'Landmark', 'Landmark · निकट') +
+    field(p + 'District', 'District · जिला', { req: true }) + field(p + 'State', 'State · राज्य', { req: true, ph: 'Chhattisgarh' }) + field(p + 'Pin', 'PIN code', { mode: 'numeric', max: 6 });
+}
+function start(m) {
+  var app = $('#app');
+  if (!m.enabled) { $('#loading').innerHTML = '<div class="empty">' + icon('event_busy') + 'The joining form is closed right now. Please contact HR.</div>'; return; }
+  var desig = '<option value="">Pick… / चुनें</option><optgroup label="Outlet">' + m.cg.map(function (x) { return '<option>' + h(x) + '</option>'; }).join('') + '</optgroup>' +
+    '<optgroup label="Head Office">' + m.hq.map(function (x) { return '<option>' + h(x) + '</option>'; }).join('') + '</optgroup>';
+  $('#loading').remove();
+  app.insertAdjacentHTML('beforeend',
+    '<form id="jf" autocomplete="on" novalidate>' +
+    '<div class="card"><div class="step"><span class="n">1</span>Job · नौकरी</div><div class="form-grid">' +
+      field('designation', 'Designation · पद', { req: true, select: desig }) + field('department', 'Department · विभाग', { req: true, select: opts(m.departments, 'Pick… / चुनें') }) +
+      field('dateOfJoining', 'Date of joining · जॉइनिंग तारीख', { req: true, type: 'date' }) +
+      field('pfApplicable', 'PF applicable? · पीएफ', { select: opts(['No', 'Yes']) }) + field('itEquipment', 'Company phone / laptop given?', { select: opts(['N/A', 'Yes', 'No']) }) + '</div></div>' +
+    '<div class="card"><div class="step"><span class="n">2</span>About you · आपके बारे में</div><div class="form-grid">' +
+      field('fullName', 'Full name · पूरा नाम', { req: true, full: true, ph: 'As on Aadhar' }) + field('fatherName', "Father's / husband's name · पिता / पति का नाम", { req: true }) +
+      field('dob', 'Date of birth · जन्म तिथि', { req: true, type: 'date' }) + field('gender', 'Gender · लिंग', { req: true, select: opts(['Male', 'Female', 'Other'], 'Pick…') }) +
+      field('bloodGroup', 'Blood group', { select: opts(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-', "Don't know"], 'Pick…') }) +
+      field('highestQual', 'Highest qualification · शिक्षा', { select: opts(['Below 10th', '10th', '12th', 'Graduate', 'Post Graduate', 'Diploma / ITI', 'Hotel Management'], 'Pick…') }) +
+      field('shirtSize', 'Shirt size', { select: opts(['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'], 'Pick…') }) + field('trouserSize', 'Trouser size (waist)', { mode: 'numeric', max: 3, ph: '32' }) +
+      field('shoeSize', 'Shoe size', { mode: 'numeric', max: 2, ph: '8' }) + '</div></div>' +
+    '<div class="card"><div class="step"><span class="n">3</span>Contact · संपर्क</div><div class="form-grid">' +
+      field('mobilePrimary', 'Mobile number · मोबाइल नंबर', { req: true, type: 'tel', mode: 'numeric', max: 10, ph: '10 digits' }) + field('fatherPhone', "Father's / family mobile", { type: 'tel', mode: 'numeric', max: 10 }) +
+      field('email', 'Email (optional)', { type: 'email', full: true }) + '</div></div>' +
+    '<div class="card"><div class="step"><span class="n">4</span>Permanent address · स्थायी पता</div><div class="form-grid">' + address('perm') + '</div>' +
+      '<label class="check mt"><input type="checkbox" id="same" checked> Current address is the same · वर्तमान पता वही है</label>' +
+      '<div class="form-grid mt hide" id="cur">' + address('current') + '</div></div>' +
+    '<div class="card"><div class="step"><span class="n">5</span>Identity &amp; bank · पहचान और बैंक</div><div class="form-grid">' +
+      field('aadharNo', 'Aadhar number · आधार नंबर', { req: true, mode: 'numeric', max: 12, ph: '12 digits' }) + field('panNo', 'PAN number', { max: 10, ph: 'ABCDE1234F' }) +
+      field('bankName', 'Bank name', { ph: 'SBI, HDFC …' }) + field('acNum', 'Account number · खाता नंबर', { mode: 'numeric', max: 20 }) + field('ifsc', 'IFSC code', { max: 11 }) + '</div></div>' +
+    '<div class="card"><div class="step"><span class="n">6</span>Documents · दस्तावेज़</div>' +
+      upBox('aadharFront', 'Aadhar card — front', true) + upBox('aadharBack', 'Aadhar card — back', true) + upBox('panCard', 'PAN card', false) + upBox('additionalDocs', 'Other documents (marksheet, bank passbook …)', false, true) +
+      '<label class="check mt"><input type="checkbox" id="decl"> I confirm these details are true. · मैं पुष्टि करता/करती हूँ कि ये जानकारी सही है।</label></div>' +
+    '<div id="err"></div><button class="btn block" id="send" type="submit" style="min-height:50px;font-size:16px">' + icon('send') + 'Submit to HR · जमा करें</button>' +
+    '<p class="small muted center mt">HR checks your form and gives you a login for leave, advance and your details.</p></form>');
+  $('#same').onchange = function () { $('#cur').classList.toggle('hide', this.checked); };
+  $$('[data-up]').forEach(function (box) {
+    var key = box.dataset.up;
+    $$('input[type=file]', box).forEach(function (inp) {
+      inp.onchange = function () {
+        var list = Array.prototype.slice.call(inp.files || []); if (!list.length) return;
+        $('.st', box).innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle"></span> Reading…';
+        Promise.all(list.map(shrink)).then(function (fs) {
+          if (key === 'additionalDocs') FILES.additionalDocs = FILES.additionalDocs.concat(fs).slice(0, 5); else FILES[key] = fs[0];
+          var img = $('img', box); if (img) img.remove();
+          if (fs[0].preview) box.insertAdjacentHTML('afterbegin', '<img src="' + fs[0].preview + '">');
+          $('.st', box).innerHTML = '<span style="color:var(--green)">✓ ' + (key === 'additionalDocs' ? FILES.additionalDocs.length + ' file(s) added' : h(fs[0].name)) + '</span>';
+        }).catch(function (e) { $('.st', box).innerHTML = '<span style="color:var(--red)">' + h(e.message) + '</span>'; });
+        inp.value = '';
+      };
+    });
+  });
+  $('#jf').onsubmit = function (e) {
+    e.preventDefault();
+    var v = function (id) { var x = $('#' + id); return x ? x.value.trim() : ''; }, errs = [];
+    if (!v('designation')) errs.push('Pick your designation.'); if (!v('department')) errs.push('Pick your department.');
+    if (!v('dateOfJoining')) errs.push('Pick the date of joining.'); if (!v('fullName')) errs.push('Write your full name.');
+    if (!v('fatherName')) errs.push("Write your father's / husband's name."); if (!v('dob')) errs.push('Pick your date of birth.'); if (!v('gender')) errs.push('Pick your gender.');
+    if (!/^\d{10}$/.test(v('mobilePrimary'))) errs.push('Enter a 10-digit mobile number.');
+    if (!v('permArea') || !v('permDistrict') || !v('permState')) errs.push('Fill your permanent address.');
+    if (!$('#same').checked && (!v('currentArea') || !v('currentDistrict'))) errs.push('Fill your current address.');
+    if (!/^\d{12}$/.test(v('aadharNo'))) errs.push('Enter your 12-digit Aadhar number.');
+    if (v('panNo') && !/^[A-Za-z]{5}\d{4}[A-Za-z]$/.test(v('panNo'))) errs.push('The PAN number does not look right (ABCDE1234F).');
+    if (v('ifsc') && !/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/.test(v('ifsc'))) errs.push('The IFSC code does not look right (11 characters).');
+    if (!FILES.aadharFront || !FILES.aadharBack) errs.push('Add both sides of the Aadhar card.');
+    if (!$('#decl').checked) errs.push('Tick the confirmation.');
+    if (errs.length) { $('#err').innerHTML = '<div class="err">' + errs.map(h).join('\n') + '</div>'; $('#err').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+    $('#err').innerHTML = '';
+    var btn = $('#send'); btn.disabled = true; btn.innerHTML = '<span class="spinner" style="width:18px;height:18px;border-width:2px"></span> Sending… please wait';
+    var d = { designation: v('designation'), department: v('department'), dateOfJoining: v('dateOfJoining'), pfApplicable: v('pfApplicable'), itEquipment: v('itEquipment'),
+      fullName: v('fullName'), fatherName: v('fatherName'), dob: v('dob'), gender: v('gender'), bloodGroup: v('bloodGroup'), highestQual: v('highestQual'),
+      shirtSize: v('shirtSize'), trouserSize: v('trouserSize'), shoeSize: v('shoeSize'), mobilePrimary: v('mobilePrimary'), fatherPhone: v('fatherPhone'), email: v('email'),
+      area: v('permArea'), landmark: v('permLandmark'), district: v('permDistrict'), state: v('permState'), pinCode: v('permPin'), sameAsPermanent: $('#same').checked,
+      currentArea: v('currentArea'), currentLandmark: v('currentLandmark'), currentDistrict: v('currentDistrict'), currentState: v('currentState'), currentPinCode: v('currentPin'),
+      aadharNo: v('aadharNo'), panNo: v('panNo'), bankName: v('bankName'), acNum: v('acNum'), ifsc: v('ifsc'),
+      files: { aadharFront: strip(FILES.aadharFront), aadharBack: strip(FILES.aadharBack), panCard: strip(FILES.panCard), additionalDocs: FILES.additionalDocs.map(strip) } };
+    call('join.submit', d).then(function (r) {
+      $('#jf').remove();
+      $('#app').insertAdjacentHTML('beforeend', '<div class="card done">' + icon('check_circle') + '<h2 style="margin:6px 0">Thank you! · धन्यवाद!</h2><p>' + h(r.message) + '</p>' +
+        '<div class="code">' + h(r.employeeCode) + '</div><p class="small muted">Keep this code. HR will call you. · यह कोड संभाल कर रखें।</p></div>');
+      window.scrollTo(0, 0);
+    }).catch(function (err) { btn.disabled = false; btn.innerHTML = icon('send') + 'Submit to HR · जमा करें'; $('#err').innerHTML = '<div class="err">' + h(err.message) + '</div>'; });
+  };
+}
+function strip(f) { return f ? { name: f.name, mime: f.mime, data: f.data } : null; }
+</script>
+<script>
+  call('join.meta').then(start).catch(function (e) { document.getElementById('loading').innerHTML = '<div class="err">' + h(e.message) + '</div>'; });
+</script>
+</body>
+</html>

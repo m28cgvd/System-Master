@@ -1,0 +1,801 @@
+<script>
+/* =====================================================================
+   Attendance · Leave Approval · Advance Approval · Roster · Certificates
+   ===================================================================== */
+
+/* ---------------- ATTENDANCE ---------------- */
+V.attendance = function (el, p) {
+  var tab = p.tab || 'day', date = p.date || addDaysISO(todayISO(), -1), month = p.month || thisMonth();
+  el.innerHTML = pageHead('Attendance Report', h(outletName())) +
+    tabsHtml([['day', 'Day report'], ['month', 'Month · attendance, leave & advance']], tab) + '<div id="ab"></div>';
+  bindTabs(el, function (t) { tab = t; show(); });
+  /** a compact table: one line per person, tap it for the rest */
+  function bindRows(box) {
+    $$('tr[data-x]', box).forEach(function (tr) { tr.onclick = function () { var d = tr.nextElementSibling; if (d && d.classList.contains('xrow')) { d.hidden = !d.hidden; tr.classList.toggle('open', !d.hidden); } }; });
+  }
+  function show() {
+    var b = $('#ab', el);
+    if (tab === 'day') {
+      b.innerHTML = '<div class="card"><div class="row"><div class="field" style="margin:0"><label>Date</label><input type="date" class="inp sm" id="ad" value="' + date + '" max="' + todayISO() + '"></div>' +
+        '<div class="seg" style="align-self:flex-end"><button data-o="-1">Yesterday</button><button data-o="-2">Day before</button><button data-o="0">Today</button></div></div></div><div id="adb" class="mt">' + loadingHtml() + '</div>';
+      $('#ad', b).onchange = function () { date = this.value; show(); };
+      $$('.seg button', b).forEach(function (x) { x.onclick = function () { date = addDaysISO(todayISO(), +x.dataset.o); show(); }; });
+      var forDate = date;
+      live('att.day', { outletId: S.outlet, date: date }, function (d) {
+        var s = d.summary;
+        s.penalty = d.rows.reduce(function (t, r) { return t + (Number(r.penalty) || 0); }, 0);
+        $('#adb', b).innerHTML = (d.note ? '<div class="pill-note mb">' + h(d.note) + '</div>' : '') +
+          '<div class="row mb" style="flex-wrap:wrap">' + chip(s.total + ' staff', 'grey') + chip(s.present + ' full day', 'green') + (s.half ? chip(s.half + ' half day', 'orange') : '') +
+          (s.leave ? chip(s.leave + ' on leave', 'blue') : '') + (s.missed ? chip(s.missed + ' punch missed', 'orange') : '') + (s.absent ? chip(s.absent + ' absent / no punch', 'red') : '') +
+          (s.penalty ? chip('penalty ' + money(s.penalty), 'red') : '') + '</div>' +
+          (d.rows.length ? '<div class="tbl-wrap"><table class="tbl compact"><tr><th>Employee</th><th>In – Out</th><th>Status</th><th class="num">Penalty</th></tr>' +
+            d.rows.map(function (r) {
+              return '<tr class="click" data-x><td><div class="b">' + h(r.name) + '</div><div class="tiny muted">' + h(r.designation) + (S.outlet === 'ALL' ? ' · ' + h(r.outlet) : '') + '</div></td>' +
+                '<td class="nowrap small">' + h(r.in || '—') + ' – ' + h(r.out || '—') + '</td><td>' + statusChip(r.status) + (r.late > 0 ? '<div class="tiny" style="color:var(--orange)">late ' + r.late + ' min</div>' : '') + '</td>' +
+                '<td class="num">' + (r.penalty > 0 ? '<span style="color:var(--red)">' + money(r.penalty) + '</span>' : '<span class="muted">—</span>') + '</td></tr>' +
+                '<tr class="xrow" hidden><td colspan="4"><div class="kv small"><b>ID</b><span>' + h(r.id) + '</span><b>Shift</b><span>' + h(r.shift || '—') + '</span><b>Worked</b><span>' + h(r.hours || '—') + '</span>' +
+                (r.brk ? '<b>Break</b><span>' + h(r.brk) + '</span>' : '') + (r.penaltyText ? '<b>Penalty for</b><span>' + h(r.penaltyText) + '</span>' : '') + '</div></td></tr>';
+            }).join('') + '</table></div>' : '<div class="card">' + emptyHtml('groups', 'No employee is linked to this outlet yet.') + '</div>');
+        bindRows($('#adb', b));
+      }, { alive: function () { return tab === 'day' && date === forDate; } }).catch(function (e) { $('#adb', b).innerHTML = errHtml(e); });
+    } else {
+      b.innerHTML = '<div class="card"><div class="row"><div class="field" style="margin:0"><label>Month</label><input type="month" class="inp sm" id="am" value="' + h(month) + '" max="' + thisMonth() + '"></div>' +
+        '<span class="grow"></span></div></div><div id="amb" class="mt">' + loadingHtml() + '</div>';
+      $('#am', b).onchange = function () { if (this.value) { month = this.value; show(); } };
+      var forMonth = month;
+      live('att.month', { outletId: S.outlet, month: month }, function (d) {
+        var P = d.people || [], t = { full: 0, half: 0, absent: 0, leave: 0, pen: 0 };
+        P.forEach(function (x) { t.full += x.full; t.half += x.half; t.absent += x.absent; t.leave += x.leave; t.pen += x.penalty; });
+        var open = function (n) { return n && n <= 6 ? ' open' : ''; };
+        $('#amb', b).innerHTML = '<div class="row mb" style="flex-wrap:wrap">' + chip(d.month, 'brown') + chip(t.full + ' full days', 'green') + (t.half ? chip(t.half + ' half days', 'orange') : '') +
+          (t.absent ? chip(t.absent + ' absent', 'red') : '') + (t.leave ? chip(t.leave + ' leave / week off', 'blue') : '') + (t.pen ? chip('penalty ' + money(t.pen), 'red') : '') + '</div>' +
+          '<details class="card"' + open(P.length || 1) + '><summary class="b" style="cursor:pointer">' + icon('how_to_reg') + ' Attendance · ' + P.length + ' people</summary><div class="mt">' +
+          (P.length ? '<div class="tbl-wrap"><table class="tbl compact"><tr><th>Employee</th><th class="num">Full</th><th class="num">Half</th><th class="num">Absent</th><th class="num">Leave</th><th class="num">Penalty</th></tr>' +
+            P.map(function (x) {
+              return '<tr class="click" data-x><td><div class="b">' + h(x.name) + '</div><div class="tiny muted">' + h(x.designation) + (x.late ? ' · late ' + x.late + '×' : '') + '</div></td><td class="num">' + x.full + '</td><td class="num">' + (x.half || '—') + '</td>' +
+                '<td class="num">' + (x.absent ? '<b style="color:var(--red)">' + x.absent + '</b>' : '—') + '</td><td class="num">' + (x.leave || '—') + '</td><td class="num">' + (x.penalty ? '<span style="color:var(--red)">' + money(x.penalty) + '</span>' : '—') + '</td></tr>' +
+                '<tr class="xrow" hidden><td colspan="6"><div class="small" style="line-height:1.8">' + x.days.map(function (y) {
+                  return '<div class="row gap6"><b class="nowrap" style="min-width:86px">' + h(y.d) + '</b>' + statusChip(y.s) + '<span class="muted nowrap">' + h(y.i) + ' – ' + h(y.o) + '</span>' +
+                    (y.l ? '<span style="color:var(--orange)">late ' + y.l + 'm</span>' : '') + (y.p ? '<span style="color:var(--red)" title="' + h(y.t) + '">' + money(y.p) + '</span>' : '') + '</div>'; }).join('') + '</div></td></tr>';
+            }).join('') + '</table></div>' : emptyHtml('cloud_off', 'No attendance uploaded for ' + d.month + ' yet.')) + '</div></details>' +
+          '<details class="card mt"' + open(d.leaves.length) + '><summary class="b" style="cursor:pointer">' + icon('event_busy') + ' Leave · ' + d.leaves.length + '</summary><div class="mt">' +
+          (d.leaves.length ? '<div class="tbl-wrap"><table class="tbl compact"><tr><th>Employee</th><th>From – To</th><th>Your step</th><th>Final</th></tr>' +
+            d.leaves.map(function (l) {
+              return '<tr class="click" data-x><td><div class="b">' + h(l.name) + '</div><div class="tiny muted">' + h(l.designation) + '</div></td><td class="nowrap small">' + h(l.from) + (l.to && l.to !== l.from ? ' – ' + h(l.to) : '') + ' · ' + num(l.days) + 'd</td>' +
+                '<td>' + (l.l1 === '-' ? '<span class="muted">—</span>' : statusChip(l.l1)) + '</td><td>' + statusChip(l.final) + '</td></tr>' +
+                '<tr class="xrow" hidden><td colspan="4" class="small">' + h(l.reason || '—') + (l.replacement ? ' · replacement: ' + h(l.replacement) : '') + '</td></tr>';
+            }).join('') + '</table></div>' : emptyHtml('event_available', 'No leave in ' + d.month + '.')) + '</div></details>' +
+          '<details class="card mt"' + open(d.advances.length) + '><summary class="b" style="cursor:pointer">' + icon('payments') + ' Advance · ' + d.advances.length + '</summary><div class="mt">' +
+          (d.advances.length ? '<div class="tbl-wrap"><table class="tbl compact"><tr><th>Employee</th><th class="num">Requested</th><th class="num">Approved</th><th>Stage</th></tr>' +
+            d.advances.map(function (a) {
+              var amt = a.admAmount || a.hrAmount || a.incAmount;
+              return '<tr class="click" data-x><td><div class="b">' + h(a.name) + '</div><div class="tiny muted">' + h(a.designation) + '</div></td><td class="num">' + money(a.requested) + '</td><td class="num">' + (amt ? money(amt) : '—') + '</td><td>' + statusChip(a.stage) + '</td></tr>' +
+                '<tr class="xrow" hidden><td colspan="4" class="small">Applied ' + h(a.applied) + (a.purpose ? ' · ' + h(a.purpose) : '') + '</td></tr>';
+            }).join('') + '</table></div>' : emptyHtml('payments', 'No advance in ' + d.month + '.')) + '</div></details>';
+        bindRows($('#amb', b));
+      }, { alive: function () { return tab === 'month' && month === forMonth; } }).catch(function (e) { $('#amb', b).innerHTML = errHtml(e); });
+    }
+  }
+  show();
+};
+
+/* ---------------- LEAVE APPROVAL ---------------- */
+V.leave = function (el) {
+  el.innerHTML = pageHead('Leave Approval', '') + '<div id="lb">' + loadingHtml() + '</div>';
+  var b = $('#lb', el);
+  function load(quiet) {
+    live('leave.list', { outletId: S.outlet }, draw, { el: b, busy: true, quiet: quiet }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  function draw(d) {
+    setBadge('leave', d.pending.length);
+    b.innerHTML = '<div class="section-title mt0" data-cnt>Waiting for you (' + d.pending.length + ')</div>' +
+      (d.pending.length ? '<div class="list">' + d.pending.map(function (l, i) {
+        var staff = d.staff.filter(function (s) { return s.outletId === l.outletId && s.id !== l.empId; });
+        return '<div class="li" data-m="' + h(l.month || String(l.sheet || '').replace(/^(Leave|Advance|Reimbursement) /, '')) + '" data-sum="' + h(l.from + (l.to && l.to !== l.from ? ' → ' + l.to : '') + ' · ' + num(l.days) + ' day(s)' + (l.reason ? ' · ' + l.reason : '')) + '"><div class="top"><div class="grow"><div class="title">' + h(l.name) + ' <span class="small muted">' + h(l.empId) + ' · ' + h(l.designation) + '</span></div>' +
+          '<div class="row gap6 mt" style="margin-top:6px">' + chip(l.from + (l.to && l.to !== l.from ? ' → ' + l.to : ''), 'blue') + chip(l.days + ' day' + (l.days > 1 ? 's' : ''), 'grey') +
+          (S.outlet === 'ALL' ? chip(l.outlet, 'grey') : '') + '</div>' +
+          '<div class="mt" style="margin-top:6px">' + h(l.reason || '—') + '</div><div class="small muted">Applied ' + h(l.applied) + '</div>' +
+          (l.skipped ? '<div class="mt">' + chip('Sent straight to HR · HR not decided yet', 'orange') + '</div>' : '') + '</div></div>' +
+          '<div class="form-grid mt"><div class="field"><label>Replacement (optional)</label><select class="inp sm" data-rep="' + i + '"><option value="">—</option>' +
+          staff.map(function (s) { return '<option value="' + h(s.id) + '">' + h(s.name) + ' · ' + h(s.designation) + '</option>'; }).join('') + '</select></div>' +
+          '<div class="field"><label>Remarks</label><input class="inp sm" data-rm="' + i + '" placeholder="Required when rejecting"></div></div>' +
+          '<div class="row"><span class="grow"></span><button class="btn sm red" data-rej="' + i + '">' + icon('close') + 'Reject</button><button class="btn sm green" data-app="' + i + '">' + icon('check') + 'Approve</button></div></div>';
+      }).join('') + '</div>' : '<div class="card">' + emptyHtml('event_available', 'No leave request is pending with you.') + '</div>') +
+      '<details class="card mt"><summary class="b" style="cursor:pointer">' + icon('history') + ' Done at your step · this month (' + d.recent.length + ')</summary><div class="mt">' + (d.recent.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Employee</th><th>Dates</th><th>Your step</th><th>Final</th><th>Remarks</th></tr>' +
+        d.recent.map(function (l) { return '<tr><td>' + h(l.name) + '</td><td class="nowrap">' + h(l.from) + (l.to !== l.from ? ' – ' + h(l.to) : '') + '</td><td>' + (l.l1 === '-' || l.l1 === '' ? chip('Went straight to HR', 'grey') : statusChip(l.l1)) + (l.l1By ? '<div class="small muted">' + h(l.l1By) + '</div>' : '') + '</td><td>' + statusChip(l.final) + '</td><td class="small">' + h(l.remarks) + (l.replacement ? '<br>Replacement: ' + h(l.replacement) : '') + '</td></tr>'; }).join('') + '</table></div>' : emptyHtml('history', 'Nothing decided yet this month.')) + '</div></details>';
+    function decide(i, dec, btn) {
+      var l = d.pending[i], card = btn.closest('.li'), rm = $('[data-rm="' + i + '"]', b).value;
+      if (dec === 'REJECTED' && !rm.trim()) return toast('Write the reason for rejecting.', 'bad');
+      park(card, true); recount(b, 'leave');                                   // at once — saved behind it
+      saveInBg('leave.decide', { sheet: l.sheet, row: l.row, empId: l.empId, decision: dec, remarks: rm, replacementId: $('[data-rep="' + i + '"]', b).value },
+        (dec === 'APPROVED' ? 'Approving ' : 'Rejecting ') + l.name + '…')
+        .then(function () { park(card, 'gone'); if (!SAVING) load(true); })
+        .catch(function (e) { park(card, false); recount(b, 'leave'); if (STALE_RE.test(e.message)) load(true); });
+    }
+    $$('[data-app]', b).forEach(function (x) { x.onclick = function () { decide(+x.dataset.app, 'APPROVED', x); }; });
+    $$('[data-rej]', b).forEach(function (x) { x.onclick = function () { decide(+x.dataset.rej, 'REJECTED', x); }; });
+    foldCards(b);
+    if ($('.list', b)) monthChips($('.list', b), monthLabelNow(), b);
+  }
+  load(false);
+};
+/** "Pending with you (n)" and the menu badge right after a card was decided (the server's list follows). */
+function recount(b, badge) {
+  var n = $$('.li', b).filter(function (x) { return !x.dataset.gone; }).length, t = $('[data-cnt]', b);
+  if (t) t.textContent = 'Pending with you (' + n + ')';
+  setBadge(badge, n);
+}
+
+/* ---------------- ADVANCE APPROVAL ---------------- */
+V.advance = function (el) {
+  el.innerHTML = pageHead('Advance Approval', '') + '<div id="vb">' + loadingHtml() + '</div>';
+  var b = $('#vb', el);
+  function load(quiet) {
+    live('adv.list', { outletId: S.outlet }, draw, { el: b, busy: true, quiet: quiet }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  function draw(d) {
+    setBadge('advance', d.pending.length);
+    b.innerHTML = '<div class="section-title mt0" data-cnt>Waiting for you (' + d.pending.length + ')</div>' +
+      (d.pending.length ? '<div class="list">' + d.pending.map(function (a, i) {
+        var amt = Math.min(a.requested || a.maxSuggest, a.maxSuggest || a.requested);
+        return '<div class="li" data-m="' + h(a.month || String(a.sheet || '').replace(/^(Leave|Advance|Reimbursement) /, '')) + '" data-sum="' + h(money(a.requested) + ' requested · ' + (a.applied || '') + (a.purpose ? ' · ' + a.purpose : '')) + '"><div class="top"><div class="grow"><div class="title">' + h(a.name) + ' <span class="small muted">' + h(a.empId) + ' · ' + h(a.designation) + '</span></div>' +
+          '<div class="small muted">Applied ' + h(a.applied) + (S.outlet === 'ALL' ? ' · ' + h(a.outlet) : '') + '</div>' +
+          '<div class="kv mt"><b>Requested</b><span class="b">' + money(a.requested) + '</span><b>Purpose</b><span>' + h(a.purpose || '—') + '</span>' +
+          '<b>Present days (claimed)</b><span>' + num(a.days) + '</span><b>Salary</b><span>' + money(a.salary) + ' · ' + money(a.daily) + '/day</span>' +
+          '<b>Suggested max</b><span>' + money(a.maxSuggest) + ' <span class="small muted">(' + h(d.rule) + ')</span></span></div>' +
+          (a.skipped ? '<div class="mt">' + chip('Sent straight to HR · HR not decided yet', 'orange') + '</div>' : '') + '</div></div>' +
+          '<div class="form-grid mt"><div class="field"><label>Max allowed (₹) *</label><input class="inp sm" inputmode="numeric" data-max="' + i + '" value="' + (a.maxSuggest || a.requested) + '"></div>' +
+          '<div class="field"><label>Approve amount (₹)</label><input class="inp sm" inputmode="numeric" data-amt="' + i + '" value="' + amt + '"></div>' +
+          '<div class="field full"><label>Remarks</label><input class="inp sm" data-rm="' + i + '" placeholder="Required when rejecting"></div></div>' +
+          '<div class="row"><span class="grow"></span><button class="btn sm red" data-rej="' + i + '">' + icon('close') + 'Reject</button><button class="btn sm green" data-app="' + i + '">' + icon('check') + 'Approve & send to HR</button></div></div>';
+      }).join('') + '</div>' : '<div class="card">' + emptyHtml('payments', 'No advance request is pending with you.') + '</div>') +
+      '<details class="card mt"><summary class="b" style="cursor:pointer">' + icon('route') + ' Tracker — from your step to the payment (' + d.tracker.length + ')</summary><div class="mt">' +
+      (d.tracker.length ? '<div class="tbl-wrap"><table class="tbl"><tr><th>Employee</th><th class="num">Requested</th><th>You (Outlet Incharge)</th><th>HR</th><th>Director</th><th>Payment</th></tr>' +
+        d.tracker.map(function (a) {
+          return '<tr><td style="min-width:160px"><div class="b">' + h(a.name) + '</div><div class="small muted">' + h(a.empId) + (S.outlet === 'ALL' ? ' · ' + h(a.outlet) : '') + '</div>' +
+            '<div class="row gap6" style="margin-top:4px">' + statusChip(a.stage) + (a.month !== d.month ? chip(a.month, 'grey') : '') + '</div></td>' +
+            '<td class="num"><b>' + money(a.requested) + '</b><div class="tiny muted nowrap">' + h(a.applied) + '</div></td>' +
+            advSteps(a).map(function (s) { return '<td>' + advCell(s) + '</td>'; }).join('') + '</tr>';
+        }).join('') + '</table></div>' : emptyHtml('history', 'Nothing else this month.')) + '</div></details>';
+    function decide(i, dec, btn) {
+      var a = d.pending[i], card = btn.closest('.li'), rm = $('[data-rm="' + i + '"]', b).value;
+      if (dec === 'REJECTED' && !rm.trim()) return toast('Write the reason for rejecting.', 'bad');
+      if (dec === 'APPROVED' && !(parseInt($('[data-max="' + i + '"]', b).value, 10) > 0)) return toast('Enter the max allowed amount.', 'bad');
+      park(card, true); recount(b, 'advance');
+      saveInBg('adv.decide', { sheet: a.sheet, row: a.row, empId: a.empId, decision: dec, maxAllowed: $('[data-max="' + i + '"]', b).value, amount: $('[data-amt="' + i + '"]', b).value, remarks: rm },
+        (dec === 'APPROVED' ? 'Approving ' : 'Rejecting ') + a.name + '\u2019s advance…')
+        .then(function () { park(card, 'gone'); if (!SAVING) load(true); })
+        .catch(function (e) { park(card, false); recount(b, 'advance'); if (STALE_RE.test(e.message)) load(true); });
+    }
+    $$('[data-app]', b).forEach(function (x) { x.onclick = function () { decide(+x.dataset.app, 'APPROVED', x); }; });
+    $$('[data-rej]', b).forEach(function (x) { x.onclick = function () { decide(+x.dataset.rej, 'REJECTED', x); }; });
+    foldCards(b);
+    if ($('.list', b)) monthChips($('.list', b), monthLabelNow(), b);
+  }
+  load(false);
+};
+
+/* ---------------- ROSTER ---------------- */
+function rosterCrumb(title, p) { return '<div class="crumb"><button class="btn sm ghost" id="roBack">' + icon('arrow_back') + 'Roster</button><b>' + h(title) + '</b></div>'; }
+function rosterBack(el, p) { $('#roBack', el).onclick = function () { go('roster', { outletId: p.outletId }); }; }
+function rosterTime(t) {
+  var m = /^(\d{1,2}):(\d{2})/.exec(t || ''); if (!m) return t || '';
+  var hh = +m[1], ap = hh >= 12 ? 'PM' : 'AM', h12 = hh % 12 || 12;
+  return h12 + (m[2] !== '00' ? ':' + m[2] : '') + ' ' + ap;
+}
+function rosterLabel(s) { return s.start && s.end ? rosterTime(s.start) + ' – ' + rosterTime(s.end) : s.name; }
+function rosterChoices(shifts) { return shifts.filter(function (s) { return (s.start && s.end) || /^L$/i.test(s.code); }); }
+function rosterOpts(shifts, code, start, end) {
+  var list = rosterChoices(shifts), extra = code && code !== 'MANUAL' && !list.some(function (s) { return s.code === code; }) ? shifts.filter(function (s) { return s.code === code; })[0] : null;
+  return '<option value=""></option>' + list.map(function (s) { return '<option value="' + h(s.code) + '"' + (code === s.code ? ' selected' : '') + '>' + h(rosterLabel(s)) + '</option>'; }).join('') +
+    (extra ? '<option value="' + h(extra.code) + '" selected>' + h(rosterLabel(extra)) + '</option>' : '') +
+    '<option value="MANUAL"' + (code === 'MANUAL' ? ' selected' : '') + '>' + h(code === 'MANUAL' && start ? rosterTime(start) + ' – ' + rosterTime(end) + ' (manual)' : 'Manual timing') + '</option>';
+}
+function rosterAskTime(cur, done) {
+  modal({ title: 'Manual shift timing', body: '<div class="form-grid"><div class="field"><label>Start</label><input type="time" class="inp" data-s value="' + h(cur.start || '') + '"></div>' +
+    '<div class="field"><label>End</label><input type="time" class="inp" data-e value="' + h(cur.end || '') + '"></div></div>',
+    actions: [{ label: 'Cancel', cls: 'ghost', click: function (close) { close(); done(null); } }, { label: 'Use this timing', cls: 'green', click: function (close, m) {
+      var a = val('[data-s]', m), b = val('[data-e]', m); if (!a || !b) return toast('Enter the start and the end.', 'bad'); close(); done({ start: a, end: b });
+    } }] });
+}
+/** Day sheet: the Daily Staff Duty Roster — shift by shift, timing, leave status and replacement (written on the leave row). */
+function rosterDay(el, p) {
+  el.innerHTML = pageHead('Roster', '') + rosterCrumb('Roster · ' + fmtISO(p.date || todayISO()), p) + '<div id="rb">' + loadingHtml() + '</div>';
+  rosterBack(el, p);
+  var date = p.date || todayISO();
+  api('ros.day', { outletId: p.outletId || singleOutlet(), date: date }).then(function (d) {
+    var b = $('#rb', el), n = 0;
+    function staffSel(r) {
+      if (!r.leave || !r.leave.sheet) return '<span class="muted">-</span>';
+      return '<select class="inp sm" data-rep="' + h(r.id) + '" style="min-width:150px"><option value="">No replacement</option>' + d.staff.filter(function (s) { return s.id !== r.id; }).map(function (s) {
+        return '<option value="' + h(s.id) + '"' + (s.id === r.leave.replacementId || (!r.leave.replacementId && s.name === r.leave.replacement) ? ' selected' : '') + '>' + h(s.name) + '</option>'; }).join('') + '</select>';
+    }
+    var rows = {};
+    b.innerHTML = '<div class="card"><div class="filters">' + rosterOutField('roOut', d) +
+      '<input type="date" class="inp sm" id="roD" value="' + h(d.date) + '"><b>' + h(d.dateText) + '</b><span class="grow"></span>' +
+      '<button class="btn sm ghost" data-dl="xlsx">' + icon('table_view') + 'Excel</button><button class="btn sm ghost" data-dl="pdf">' + icon('picture_as_pdf') + 'PDF</button></div>' +
+      '<div class="small mt"><b>' + h(d.outlet) + '</b>' + (d.incharge ? ' · Store In-Charge: <b>' + h(d.incharge) + '</b>' : '') + ' · Total staff strength: <b>' + d.total + '</b></div></div>' +
+      d.groups.map(function (g) {
+        return '<div class="section-title">' + h(g.name) + (g.timing ? ' — ' + h(g.timing) : '') + ' (' + g.rows.length + ')</div>' +
+          tableHtml([{ t: 'Section', f: function (r) { return '<span class="small">' + h(r.section || '—') + '</span>'; } }, { t: 'S. No.', cls: 'num', f: function () { return ++n; } },
+            { t: 'Employee ID', f: function (r) { return '<span class="nowrap">' + h(r.id) + '</span>'; } }, { t: 'Employee Name', f: function (r) { return '<b>' + h(r.name) + '</b><div class="tiny muted">' + h(r.designation) + '</div>'; } },
+            { t: 'Shift Timing', f: function (r) { return '<span class="nowrap">' + h(r.timing || '—') + '</span>'; } },
+            { t: 'Leave Status', f: function (r) { rows[r.id] = r; return r.leave ? chip(r.leave.state.replace(/^Leave (approved|applied)$/, '$1'), /approved/i.test(r.leave.state) ? 'green' : /week off/i.test(r.leave.state) ? 'grey' : 'orange') + (r.leave.from ? '<div class="tiny muted">' + h(r.leave.from + (r.leave.to !== r.leave.from ? ' – ' + r.leave.to : '')) + '</div>' : '') : '<span class="muted">-</span>'; } },
+            { t: 'Replacement', f: staffSel }], g.rows);
+      }).join('') + (d.groups.length ? '' : '<div class="card mt">' + emptyHtml('groups', 'Nobody is linked to this outlet.') + '</div>');
+    $('#roD', b).onchange = function () { go('roster', { mode: 'day', outletId: d.outletId, date: this.value }); };
+    if ($('#roOut', b).tagName === 'SELECT') $('#roOut', b).onchange = function () { go('roster', { mode: 'day', outletId: this.value, date: d.date }); };
+    $$('[data-rep]', b).forEach(function (sel) {
+      sel.onchange = function () {
+        var r = rows[sel.dataset.rep]; sel.disabled = true;
+        api('ros.replace', { outletId: d.outletId, sheet: r.leave.sheet, row: r.leave.row, empId: r.id, replacementId: sel.value })
+          .then(function (x) { sel.disabled = false; toast(x.message, 'ok'); }).catch(function (e) { sel.disabled = false; toast(e.message, 'bad'); });
+      };
+    });
+    $$('[data-dl]', b).forEach(function (bt) {
+      bt.onclick = function () {
+        busy(bt, true, '…');
+        api('ros.dayReport', { outletId: d.outletId, date: d.date, format: bt.dataset.dl }).then(function (r) { busy(bt, false); downloadB64(r.base64, r.fileName, r.mime); })
+          .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+      };
+    });
+  }).catch(function (e) { $('#rb', el).innerHTML = errHtml(e); });
+}
+function rosterOutField(id, d) {
+  var list = d.outlets || [];
+  if (list.length <= 1) return '<input type="hidden" id="' + id + '" value="' + h(d.outletId) + '">';
+  return '<div class="field"><label>Outlet</label><select class="inp" id="' + id + '">' + list.map(function (o) {
+    return '<option value="' + h(o.id) + '"' + (o.id === d.outletId ? ' selected' : '') + '>' + h(o.name) + '</option>';
+  }).join('') + '</select></div>';
+}
+V.roster = function (el, p) {
+  if (p.mode === 'day') return rosterDay(el, p);
+  if (p.mode === 'edit') return rosterEdit(el, p);
+  if (p.mode === 'week') return rosterWeek(el, p);
+  el.innerHTML = pageHead('Roster', '') + '<div class="row mb" id="roO"></div><div id="rb">' + loadingHtml() + '</div>';
+  var oid = p.outletId || singleOutlet();
+  api('ros.summary', { outletId: oid }).then(function (d) {
+    $('#roO', el).innerHTML = rosterOutField('roOut', d) + '<span class="grow"></span><span class="small muted">' + h(d.staff + ' staff') + (d.last ? ' · last saved ' + h(d.last.at) + ' by ' + h(d.last.by) : '') + '</span>';
+    if ($('#roOut', el).tagName === 'SELECT') $('#roOut', el).onchange = function () { go('roster', { outletId: this.value }); };
+    hubCards($('#rb', el), [
+      { key: 'tomorrow', icon: 'event', label: 'Prepare for Tomorrow', value: d.tomorrow.planned ? d.tomorrow.planned + '/' + d.staff : 'Not made', sub: d.tomorrow.text },
+      { key: 'week', icon: 'date_range', label: 'Prepare Weekly Roster', value: icon('chevron_right'), sub: 'This week' },
+      { key: 'yesterday', icon: 'history', label: 'Yesterday\'s roster', value: d.yesterday.planned + '/' + d.staff, sub: d.yesterday.text + ' · duty sheet' }
+    ], function (k) {
+      if (k === 'week') return go('roster', { mode: 'week', outletId: d.outletId });
+      if (k === 'yesterday') return go('roster', { mode: 'day', outletId: d.outletId, date: d.yesterday.date });
+      go('roster', { mode: 'edit', outletId: d.outletId, date: d.tomorrow.date });
+    });
+    $('#rb', el).insertAdjacentHTML('beforeend', '<div class="row mt"><span class="grow"></span><input type="date" class="inp sm" id="roPick" style="width:auto"><button class="btn sm ghost" id="roGo">' + icon('edit_calendar') + 'Prepare another day</button>' +
+      '<button class="btn sm ghost" id="roSee">' + icon('visibility') + 'Duty sheet</button></div>');
+    $('#roGo', el).onclick = function () { var v = val('#roPick', el); if (!v) return toast('Pick the date.', 'bad'); go('roster', { mode: 'edit', outletId: d.outletId, date: v }); };
+    $('#roSee', el).onclick = function () { go('roster', { mode: 'day', outletId: d.outletId, date: val('#roPick', el) || d.today.date }); };
+  }).catch(function (e) { $('#rb', el).innerHTML = errHtml(e); });
+};
+function rosterEdit(el, p) {
+  var date = p.date || addDaysISO(todayISO(), 1);
+  el.innerHTML = pageHead('Roster', '') + rosterCrumb('Prepare · ' + fmtISO(date), p) + '<div id="rb">' + loadingHtml() + '</div>';
+  rosterBack(el, p);
+  api('ros.load', { outletId: p.outletId || singleOutlet(), week: date }).then(function (d) {
+    var b = $('#rb', el), cell = {}, prev = addDaysISO(date, -1), info = d.leaveInfo || {};
+    d.employees.forEach(function (e) {
+      var k = e.id.toUpperCase() + '|' + date, c = d.cells[k], li = info[k];
+      cell[e.id] = c ? { code: c.code, start: c.start, end: c.end, rep: c.replacementId || (li && li.replacementId) || '' }
+        : li && li.state === 'approved' ? { code: 'L', rep: li.replacementId || '' } : { code: '', rep: '' };
+    });
+    var outs = d.outlets || [];
+    b.innerHTML = '<div class="fbar">' + (outs.length > 1 ? '<div class="ff"><label>Location</label><select class="inp sm" id="reO">' + outs.map(function (o) {
+        return '<option value="' + h(o.id) + '"' + (o.id === d.outletId ? ' selected' : '') + '>' + h(o.name) + '</option>'; }).join('') + '</select></div>' : '<div class="ff"><label>Location</label><b class="inp sm" style="display:flex;align-items:center;background:#FBF6EE">' + h(d.outlet) + '</b></div>') +
+      '<div class="ff"><label>Date</label><input type="date" class="inp sm" id="reD" value="' + h(date) + '"></div>' +
+      '<div class="ff"><label>Fill the empty ones with</label><select class="inp sm" id="reFill">' + rosterOpts(d.shifts, '') + '</select></div>' +
+      '<span class="grow"></span><button class="btn sm ghost" id="reCopy">' + icon('content_copy') + 'Same as ' + h(fmtISO(prev)) + '</button></div>' +
+      (d.employees.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Employee</th><th>Shift timing</th><th>Replacement</th></tr></thead><tbody>' + d.employees.map(function (e, i) {
+        var li = info[e.id.toUpperCase() + '|' + date];
+        return '<tr><td><b>' + h(e.name) + '</b><div class="tiny muted">' + h([e.designation, e.department].filter(Boolean).join(' · ')) + '</div>' +
+          (li ? '<div class="tiny" style="color:' + (li.state === 'approved' ? 'var(--green)' : 'var(--orange)') + '">' + h(li.state === 'approved' ? 'Leave approved' : 'Leave applied') + (li.reason ? ' · ' + li.reason : '') + '</div>' : '') + '</td>' +
+          '<td><select class="inp sm" data-e="' + i + '" style="min-width:160px">' + rosterOpts(d.shifts, cell[e.id].code, cell[e.id].start, cell[e.id].end) + '</select></td>' +
+          '<td><select class="inp sm" data-r="' + i + '" style="min-width:180px"></select></td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="card">' + emptyHtml('groups', 'No employee is linked to this location.') + '</div>') +
+      '<div class="row mt"><span class="small muted" id="reN"></span><span class="grow"></span><button class="btn green" id="reSave">' + icon('save') + 'Save roster</button></div>';
+    function repOpts(i) {
+      var e = d.employees[i], c = cell[e.id], dep = String(e.department || '').toLowerCase();
+      var free = d.employees.filter(function (x) { return x.id !== e.id && cell[x.id].code !== 'L'; });
+      var same = free.filter(function (x) { return String(x.department || '').toLowerCase() === dep; }), other = free.filter(function (x) { return String(x.department || '').toLowerCase() !== dep; });
+      var opt = function (x) { return '<option value="' + h(x.id) + '"' + (x.id === c.rep ? ' selected' : '') + '>' + h(x.name + (x.designation ? ' · ' + x.designation : '')) + '</option>'; };
+      return '<option value="">' + (c.code === 'L' ? 'No replacement' : '—') + '</option>' + (same.length ? '<optgroup label="Same department">' + same.map(opt).join('') + '</optgroup>' : '') +
+        (other.length ? '<optgroup label="Other departments">' + other.map(opt).join('') + '</optgroup>' : '');
+    }
+    function paintRep(i) {
+      var sel = $('[data-r="' + i + '"]', b); if (!sel) return;
+      var c = cell[d.employees[i].id];
+      if (c.code !== 'L') c.rep = '';
+      sel.innerHTML = repOpts(i); sel.disabled = c.code !== 'L';
+    }
+    function paintAllRep() { d.employees.forEach(function (e, i) { paintRep(i); }); }
+    function count() {
+      var n = d.employees.filter(function (e) { return cell[e.id].code; }).length, lv = d.employees.filter(function (e) { return cell[e.id].code === 'L'; }).length;
+      $('#reN', b).textContent = n + ' of ' + d.employees.length + ' planned' + (lv ? ' · ' + lv + ' on leave' : '');
+    }
+    function redraw(i) { var e = d.employees[i], c = cell[e.id]; $('[data-e="' + i + '"]', b).innerHTML = rosterOpts(d.shifts, c.code, c.start, c.end); }
+    $$('[data-e]', b).forEach(function (sel) {
+      sel.onchange = function () {
+        var i = +sel.dataset.e, e = d.employees[i], v = sel.value;
+        if (v === 'MANUAL') return rosterAskTime(cell[e.id], function (t) { if (t) cell[e.id] = { code: 'MANUAL', start: t.start, end: t.end, rep: '' }; redraw(i); paintAllRep(); count(); });
+        cell[e.id] = { code: v, rep: v === 'L' ? cell[e.id].rep : '' }; paintAllRep(); count();
+      };
+    });
+    $$('[data-r]', b).forEach(function (sel) { sel.onchange = function () { cell[d.employees[+sel.dataset.r].id].rep = sel.value; }; });
+    $('#reFill', b).onchange = function () {
+      var v = this.value, sel = this; if (!v) return;
+      function apply(t) { d.employees.forEach(function (e, i) { if (!cell[e.id].code) { cell[e.id] = t ? { code: 'MANUAL', start: t.start, end: t.end, rep: '' } : { code: v, rep: '' }; redraw(i); } }); sel.value = ''; paintAllRep(); count(); }
+      if (v === 'MANUAL') rosterAskTime({}, function (t) { if (t) apply(t); else sel.value = ''; }); else apply(null);
+    };
+    $('#reCopy', b).onclick = function () {
+      var bt = this; busy(bt, true);
+      api('ros.load', { outletId: d.outletId, week: prev }).then(function (pw) {
+        var n = 0;
+        d.employees.forEach(function (e, i) { var c = pw.cells[e.id.toUpperCase() + '|' + prev]; if (c && !(info[e.id.toUpperCase() + '|' + date] || {}).state) { cell[e.id] = { code: c.code, start: c.start, end: c.end, rep: '' }; redraw(i); n++; } });
+        busy(bt, false); paintAllRep(); count(); toast(n ? n + ' copied — check and save.' : 'No roster on ' + fmtISO(prev) + '.', n ? 'ok' : '');
+      }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+    };
+    $('#reD', b).onchange = function () { if (this.value) go('roster', { mode: 'edit', outletId: d.outletId, date: this.value }); };
+    if ($('#reO', b)) $('#reO', b).onchange = function () { go('roster', { mode: 'edit', outletId: this.value, date: date }); };
+    $('#reSave', b).onclick = function () {
+      var bt = this, list = d.employees.filter(function (e) { return cell[e.id].code; }).map(function (e) {
+        var c = cell[e.id], li = info[e.id.toUpperCase() + '|' + date] || {};
+        return { empId: e.id, code: c.code, start: c.start || '', end: c.end || '', replacementId: c.code === 'L' ? c.rep || '' : '', leaveSheet: c.code === 'L' ? li.sheet || '' : '', leaveRow: c.code === 'L' ? li.row || '' : '' };
+      });
+      if (!list.length) return toast('Give at least one person a shift.', 'bad');
+      busy(bt, true, 'Saving…');
+      api('ros.saveDay', { outletId: d.outletId, date: date, cells: list }).then(function (r) { busy(bt, false); toast(r.message, 'ok'); go('roster', { mode: 'day', outletId: d.outletId, date: date }); })
+        .catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+    };
+    paintAllRep(); count();
+  }).catch(function (e) { $('#rb', el).innerHTML = errHtml(e); });
+}
+function rosterWeek(el, p) {
+  el.innerHTML = pageHead('Roster', '') + rosterCrumb('Weekly roster', p) + '<div id="rb">' + loadingHtml() + '</div>';
+  rosterBack(el, p);
+  api('ros.load', { outletId: p.outletId || singleOutlet(), week: p.week || '' }).then(function (d) {
+    var b = $('#rb', el), cells = {};
+    Object.keys(d.cells).forEach(function (k) { cells[k] = { code: d.cells[k].code, start: d.cells[k].start, end: d.cells[k].end, replacementId: d.cells[k].replacementId || '' }; });
+    Object.keys(d.leaveInfo || {}).forEach(function (k) { if (!cells[k] && d.leaveInfo[k].state === 'approved') cells[k] = { code: 'L', replacementId: d.leaveInfo[k].replacementId || '' }; });
+    var shiftBy = {}; d.shifts.forEach(function (s) { shiftBy[s.code] = s; });
+    b.innerHTML = '<div class="fbar">' + rosterOutField('roOut', d) +
+      '<button class="icon-btn" id="prev">' + icon('chevron_left') + '</button><b>' + h(d.weekText) + '</b><button class="icon-btn" id="next">' + icon('chevron_right') + '</button>' +
+      '<span class="grow"></span><button class="btn sm ghost" id="copy">' + icon('content_copy') + 'Copy last week</button>' +
+      '<select class="inp sm" id="fill" style="width:auto"><option value="">Fill empty with…</option>' + rosterChoices(d.shifts).map(function (s) { return '<option value="' + h(s.code) + '">' + h(rosterLabel(s)) + '</option>'; }).join('') + '</select></div>' +
+      (d.employees.length ? '<div class="tbl-wrap"><table class="tbl roster"><tr><th>Employee</th>' + d.days.map(function (x) { return '<th class="center">' + h(x.label) + '</th>'; }).join('') + '</tr>' +
+        d.employees.map(function (e) {
+          return '<tr><td><div class="b nowrap">' + h(e.name) + '</div><div class="small muted">' + h(e.designation) + '</div></td>' + d.days.map(function (x) {
+            var k = e.id.toUpperCase() + '|' + x.key, lv = d.leaves[k], c = cells[k] || {};
+            return '<td class="center"><select data-c="' + h(k) + '"' + (lv ? ' title="' + h(lv) + '" style="outline:2px solid #FECACA"' : '') + '>' + rosterOpts(d.shifts, c.code, c.start, c.end) + '</select>' +
+              (lv ? '<div class="tiny" style="color:var(--red)">' + h(lv) + '</div>' : '') + '</td>';
+          }).join('') + '</tr>';
+        }).join('') + '</table></div><div class="row mt"><span class="grow"></span><button class="btn green" id="save">' + icon('save') + 'Save roster</button></div>'
+        : '<div class="card mt">' + emptyHtml('groups', 'No employee is linked to this outlet.') + '</div>');
+    function paint() { $$('[data-c]', b).forEach(function (s) { var sh = shiftBy[s.value]; s.style.background = sh ? sh.color : s.value === 'MANUAL' ? '#EFE8FC' : '#fff'; }); }
+    $$('[data-c]', b).forEach(function (s) {
+      s.onchange = function () {
+        var k = s.dataset.c;
+        if (s.value === 'MANUAL') return rosterAskTime(cells[k] || {}, function (t) { cells[k] = t ? { code: 'MANUAL', start: t.start, end: t.end } : (cells[k] || {}); s.innerHTML = rosterOpts(d.shifts, cells[k].code, cells[k].start, cells[k].end); paint(); });
+        cells[k] = { code: s.value, replacementId: s.value === 'L' ? (cells[k] || {}).replacementId || '' : '' }; paint();
+      };
+    });
+    paint();
+    function goWeek(n) { go('roster', { mode: 'week', outletId: val('#roOut', b), week: addDaysISO(d.week, n) }); }
+    $('#prev', b).onclick = function () { goWeek(-7); };
+    $('#next', b).onclick = function () { goWeek(7); };
+    if ($('#roOut', b).tagName === 'SELECT') $('#roOut', b).onchange = function () { go('roster', { mode: 'week', outletId: this.value, week: d.week }); };
+    $('#fill', b).onchange = function () { var v = this.value; if (!v) return; $$('[data-c]', b).forEach(function (s) { if (!s.value) { s.value = v; cells[s.dataset.c] = { code: v }; } }); this.value = ''; paint(); };
+    $('#copy', b).onclick = function () {
+      var btn = this; busy(btn, true);
+      api('ros.load', { outletId: d.outletId, week: addDaysISO(d.week, -7) }).then(function (pw) {
+        var n = 0;
+        Object.keys(pw.cells).forEach(function (k) {
+          var parts = k.split('|'), nk = parts[0] + '|' + addDaysISO(parts[1], 7), s = $('[data-c="' + nk + '"]', b), c = pw.cells[k];
+          if (s) { cells[nk] = { code: c.code, start: c.start, end: c.end }; s.innerHTML = rosterOpts(d.shifts, c.code, c.start, c.end); n++; }
+        });
+        paint(); busy(btn, false); toast(n ? n + ' shifts copied — check and save.' : 'Last week has no roster.', n ? 'ok' : '');
+      }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+    if ($('#save', b)) $('#save', b).onclick = function () {
+      var list = Object.keys(cells).filter(function (k) { return cells[k].code; }).map(function (k) { var x = k.split('|'), c = cells[k]; return { empId: x[0], date: x[1], code: c.code, start: c.start || '', end: c.end || '', replacementId: c.code === 'L' ? c.replacementId || '' : '' }; });
+      var btn = this; busy(btn, true, 'Saving…');
+      api('ros.save', { outletId: d.outletId, week: d.week, cells: list }).then(function (r) { toast(r.message, 'ok'); busy(btn, false); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    };
+  }).catch(function (e) { $('#rb', el).innerHTML = errHtml(e); });
+}
+
+/* ---------------- CERTIFICATES ---------------- */
+var CERT_NAMES = ['FSSAI License', 'Shop & Establishment (Gumasta)', 'Trade License', 'Fire NOC', 'GST Certificate', 'Pest Control Certificate',
+  'Water Test Report', 'Food Handler Medical Fitness', 'Weights & Measures Certificate', 'Signage / Hoarding Permission', 'Rent Agreement', 'Fire Extinguisher Refill'];
+V.certificates = function (el, p) {
+  el.innerHTML = pageHead('Certificates', 'Licences and certificates of ' + h(outletName()), '<button class="btn" id="cadd">' + icon('add') + 'Add certificate</button>') + '<div id="cb">' + loadingHtml() + '</div>';
+  $('#cadd', el).onclick = function () { certForm(null); };
+  function load(quiet) {
+    live('cert.list', { outletId: S.outlet }, function (d) {
+      var b = $('#cb', el);
+      b.innerHTML = d.rows.length ? '<div class="grid g3">' + d.rows.map(function (c, i) {
+        var k = c.status === 'Expired' ? 'red' : c.status === 'Expiring Soon' ? 'orange' : c.status === 'Valid' ? 'green' : 'grey';
+        return '<div class="card"><div class="row"><div class="grow"><h3 style="margin:0">' + h(c.name) + '</h3><div class="small muted">' + (c.number ? 'No. ' + h(c.number) : 'No number') + (S.outlet === 'ALL' ? ' · ' + h(c.outlet) : '') + '</div></div>' + chip(c.status, k) + '</div>' +
+          '<div class="kv mt"><b>Issued</b><span>' + h(c.dateText || '—') + '</span><b>Expiry</b><span>' + h(c.expiryText || '—') + (c.daysLeft !== '' ? ' <span class="small muted">(' + (c.daysLeft < 0 ? Math.abs(c.daysLeft) + ' days ago' : c.daysLeft + ' days left') + ')</span>' : '') + '</span>' +
+          '<b>Added</b><span>' + h(c.at) + ' · ' + h(c.by) + '</span></div>' + (c.remarks ? '<div class="small mt">' + h(c.remarks) + '</div>' : '') +
+          '<div class="row mt"><button class="btn sm" data-v="' + i + '">' + icon('visibility') + 'View</button><button class="btn sm ghost" data-e="' + i + '">' + icon('edit') + 'Update</button>' +
+          '<button class="icon-btn right" data-x="' + i + '" title="Remove">' + icon('delete') + '</button></div></div>';
+      }).join('') + '</div>' : '<div class="card">' + emptyHtml('workspace_premium', 'No certificate added yet. Add the FSSAI licence, Shop Act, Fire NOC …') + '</div>';
+      $$('[data-v]', b).forEach(function (x) { x.onclick = function () { var c = d.rows[+x.dataset.v]; viewFile('cert', c.id, c.name); }; });
+      $$('[data-e]', b).forEach(function (x) { x.onclick = function () { certForm(d.rows[+x.dataset.e]); }; });
+      $$('[data-x]', b).forEach(function (x) {
+        x.onclick = function () {
+          var c = d.rows[+x.dataset.x];
+          confirmBox('Remove certificate?', 'Remove <b>' + h(c.name) + '</b>? The file stays in Drive.', 'Remove', true).then(function (ok) {
+            if (ok) api('cert.remove', { id: c.id }).then(function (r) { toast(r.message, 'ok'); load(true); }).catch(function (e) { toast(e.message, 'bad'); });
+          });
+        };
+      });
+    }, { quiet: quiet }).catch(function (e) { $('#cb', el).innerHTML = errHtml(e); });
+  }
+  function certForm(c) {
+    var fp;
+    modal({ title: c ? 'Update ' + c.name : 'Add certificate', wide: true,
+      body: '<div class="form-grid">' + (c ? '' : outletField('ceOut', false)) +
+        '<div class="field full"><label>Certificate name *</label><input class="inp" id="cn" list="cnl" value="' + h(c ? c.name : '') + '" placeholder="e.g. FSSAI License"><datalist id="cnl">' + CERT_NAMES.map(function (n) { return '<option value="' + h(n) + '">'; }).join('') + '</datalist></div>' +
+        '<div class="field"><label>Certificate number</label><input class="inp" id="cnum" value="' + h(c ? c.number : '') + '"></div>' +
+        '<div class="field"><label>Certificate date</label><input type="date" class="inp" id="cd" value="' + h(c ? c.date : '') + '"></div>' +
+        '<div class="field"><label>Expiry date</label><input type="date" class="inp" id="ce" value="' + h(c ? c.expiry : '') + '"></div>' +
+        '<div class="field"><label>Remarks</label><input class="inp" id="cr" value="' + h(c ? c.remarks : '') + '"></div>' +
+        '<div class="full" id="cfb"></div></div>',
+      onOpen: function (m) { fp = filePicker($('#cfb', m), 'cert', { label: c ? 'Replace the file (optional)' : 'Certificate photo / PDF', required: !c }); },
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('save') + 'Save', cls: 'green', click: function (close, m, btn) {
+        if (fp.busy()) return toast('Wait for the upload.');
+        var f = fp.get();
+        if (!c && !f) return toast('Take a photo or upload the certificate.', 'bad');
+        busy(btn, true);
+        api('cert.save', { id: c ? c.id : '', outletId: val('#ceOut', m) || singleOutlet(), name: val('#cn', m), number: val('#cnum', m), date: val('#cd', m),
+          expiry: val('#ce', m), remarks: val('#cr', m), fileId: f ? f.fileId : '', fileName: f ? f.name : '', mime: f ? f.mime : '' })
+          .then(function (r) { close(); toast(r.message, 'ok'); load(true); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+  load();
+  if (p.add) certForm(null);
+};
+
+/* ---------------- PENALTY (HR · Outlet Incharge · MIS · Director) ---------------- */
+(function () {
+  if (document.getElementById('penCss')) return;
+  var st = document.createElement('style'); st.id = 'penCss';
+  st.textContent = '.pen-cell .tog{font-size:11.5px;padding:2px 9px}.pen-cell:not(.open) .tog:not(.on):not(.pen-more){display:none}' +
+    '.pen-cell .pen-more{background:var(--cream);border-color:var(--cream2);color:var(--brown)}.pen-cell .pen-more .ms{font-size:14px;vertical-align:-2px}' +
+    '.pen-tbl td{padding:6px 8px}.pen-tbl .inp.sm{min-height:30px}.pen-card.dirty{background:#FFFBEA;border-color:#F5D27A}';
+  document.head.appendChild(st);
+})();
+V.penalty = function (el, p) { penaltyPanel(el, p || {}, false); };
+/** The whole penalty section. Also shown inside HR's Attendance Manager (embedded = no page head). */
+function penaltyPanel(root, p, embedded) {
+  var tab = p.tab || 'board', M = null, st = {};
+  root.innerHTML = (embedded ? '' : pageHead('Penalty', '')) +
+    '<div data-pb>' + loadingHtml() + '</div>';
+  var box = $('[data-pb]', root);
+  cached('penMeta', function () { return api('pen.meta'); }).then(function (m) {
+    M = m;
+    st = { date: p.date || (m.dates[0] ? m.dates[0].key : addDaysISO(m.today, -1)), group: '', outletId: '', q: '', only: false, from: m.monthStart, to: m.today };
+    render();
+  }).catch(function (e) { box.innerHTML = errHtml(e); });
+
+  function render() {
+    var anyOn = M.employees.some(function (e) { return e.penaltyOn; });
+    box.innerHTML = 
+      (M.employees.length && !anyOn ? '<div class="warn mb">' + icon('info') + ' Penalties are switched off for ' + (M.wide ? 'every location' : 'your outlet') +
+        '. HR switches them on in Payroll ▸ Rules ▸ Locations (Apply Penalty = Yes).</div>' : '') +
+      (!M.wide && !M.employees.length ? '<div class="warn mb">' + icon('info') + ' Your outlet is not set up in the attendance workbook yet (Payroll ▸ Rules ▸ Locations). ' +
+        'Penalties start here once HR adds it.</div>' : '') +
+      tabsHtml([['board', 'Day board'], ['charges', 'Given by hand'], ['summary', 'Month summary'], ['rules', 'Rules']], tab) + '<div data-px></div>';
+    bindTabs(box, function (t) { tab = t; show(); });
+    show();
+  }
+  function show() {
+    var x = $('[data-px]', box);
+    if (tab === 'charges') chargesTab(x); else if (tab === 'summary') summaryTab(x); else if (tab === 'rules') rulesTab(x); else boardTab(x);
+  }
+  function scopeSel() {
+    if (M.wide) return '<select class="inp sm" data-scope style="width:auto"><option value="">All locations</option>' + M.groups.filter(function (g) { return g.applyPenalty; }).map(function (g) {
+      return '<option value="' + h(g.groupKey) + '"' + (g.groupKey === st.group ? ' selected' : '') + '>' + h(g.groupName) + '</option>'; }).join('') + '</select>';
+    if (M.outlets.length > 1) return '<select class="inp sm" data-scope style="width:auto"><option value="">All my outlets</option>' + M.outlets.map(function (o) {
+      return '<option value="' + h(o.id) + '"' + (o.id === st.outletId ? ' selected' : '') + '>' + h(o.name) + '</option>'; }).join('') + '</select>';
+    return '';
+  }
+  /** Excel / PDF of what the tab shows (Penalty report: summary + every penalty day; Given by hand: the list with remarks). */
+  function penDl() {
+    if (embedded) return '';
+    return '<button class="btn sm ghost" data-dl="xlsx" title="Download as Excel">' + icon('table_view') + 'Excel</button>' +
+      '<button class="btn sm ghost" data-dl="pdf" title="Download as PDF">' + icon('picture_as_pdf') + 'PDF</button>';
+  }
+  function bindDl(x, kind) {
+    $$('[data-dl]', x).forEach(function (bt) {
+      bt.onclick = function () {
+        busy(bt, true, '…');
+        api('pen.report', { kind: kind, from: st.from, to: st.to, group: st.group, outletId: st.outletId, format: bt.dataset.dl }).then(function (r) {
+          busy(bt, false); downloadB64(r.base64, r.fileName, r.mime); toast(r.fileName + ' downloaded.', 'ok');
+        }).catch(function (e) { busy(bt, false); toast(e.message, 'bad'); });
+      };
+    });
+  }
+  function bindScope(x, again) {
+    var s = $('[data-scope]', x); if (!s) return;
+    s.onchange = function () { if (M.wide) st.group = s.value; else st.outletId = s.value; again(); };
+  }
+  function rulesFor(groupKey) { return M.catalog.filter(function (c) { return !c.groupKey || c.groupKey === groupKey; }); }
+  function amountText(r) {
+    var a = r.amountType === 'PER_MINUTE' ? money(r.amount) + ' per minute' : r.amountType === 'PER_HOUR' ? money(r.amount) + ' per hour'
+      : r.amountType === 'PERCENT_DAILY' ? num(r.amount) + '% of a day\'s salary' : r.amountType === 'PERCENT_MONTHLY' ? num(r.amount) + '% of the monthly salary' : money(r.amount);
+    return a + (r.cap ? ' · at most ' + money(r.cap) : '');
+  }
+
+  /* ---------- day board ---------- */
+  function boardTab(x) {
+    var B = null, ed = {}, openRows = {};
+    x.innerHTML = '<div class="card"><div class="filters">' +
+      '<button class="icon-btn" data-prev title="Day before">' + icon('chevron_left') + '</button>' +
+      '<input type="date" class="inp sm" data-date value="' + h(st.date) + '" max="' + h(M.today) + '">' +
+      '<button class="icon-btn" data-next title="Next day">' + icon('chevron_right') + '</button>' + scopeSel() +
+      '<input class="inp sm" data-q placeholder="Search name / ID" value="' + h(st.q) + '" style="width:170px">' +
+      '<span class="qf' + (st.only ? ' on' : '') + '" data-only>' + icon('filter_alt') + 'Only with penalty</span></div>' +
+      (M.dates.length ? '<div class="small muted" style="margin-top:8px">Uploaded: ' + M.dates.slice(0, 6).map(function (d) {
+        return '<a href="#" data-d="' + h(d.key) + '"' + (d.key === st.date ? ' class="b"' : '') + '>' + h(d.label) + '</a>'; }).join(' · ') + '</div>' : '') +
+      '</div><div data-bb class="mt">' + loadingHtml() + '</div>';
+    function setDate(k) { if (!k || k > M.today) return; st.date = k; boardTab(x); }
+    $('[data-date]', x).onchange = function () { setDate(this.value); };
+    $('[data-prev]', x).onclick = function () { setDate(addDaysISO(st.date, -1)); };
+    $('[data-next]', x).onclick = function () { setDate(addDaysISO(st.date, 1)); };
+    $$('[data-d]', x).forEach(function (a) { a.onclick = function (e) { e.preventDefault(); setDate(a.dataset.d); }; });
+    bindScope(x, function () { boardTab(x); });
+    $('[data-q]', x).oninput = debounce(function () { st.q = val('[data-q]', x).toLowerCase(); paint(); }, 150);
+    $('[data-only]', x).onclick = function () { st.only = !st.only; this.classList.toggle('on', st.only); paint(); };
+    api('pen.board', { date: st.date, group: st.group, outletId: st.outletId }).then(function (d) { B = d; paint(); })
+      .catch(function (e) { $('[data-bb]', x).innerHTML = errHtml(e); });
+
+    function paint() {
+      var b = $('[data-bb]', x), rows = B.rows;
+      var k = { people: rows.length, auto: 0, hand: 0, total: 0 };
+      rows.forEach(function (r) { if (r.auto > 0) k.auto++; k.hand += r.applied.length; k.total += r.total || 0; });
+      var list = rows.map(function (r, i) { return { r: r, i: i }; }).filter(function (o) {
+        var r = o.r;
+        if (st.q && (r.name + ' ' + r.employeeId + ' ' + r.designation).toLowerCase().indexOf(st.q) < 0) return false;
+        if (st.only && !(r.total > 0 || r.applied.length || ed[o.i])) return false;
+        return true;
+      });
+      b.innerHTML = '<div class="kpis mb"><div class="kpi"><div class="l">' + h(B.day + ', ' + B.dateText) + '</div><div class="v">' + k.people + '</div><div class="s">people</div></div>' +
+        '<div class="kpi orange"><div class="l">Automatic penalty</div><div class="v">' + k.auto + '</div><div class="s">people</div></div>' +
+        '<div class="kpi violet"><div class="l">Given by hand</div><div class="v">' + k.hand + '</div><div class="s">penalties</div></div>' +
+        '<div class="kpi red"><div class="l">Total for the day</div><div class="v">' + money(k.total) + '</div></div></div>' +
+        (B.note ? '<div class="pill-note mb">' + h(B.note) + '</div>' : '') +
+        (!rows.length ? '<div class="card">' + emptyHtml('groups', 'Nobody here has penalties switched on.') + '</div>' :
+        (window.innerWidth < 760 ? '<div class="list">' + list.map(function (o) { return cardHtml(o.r, o.i); }).join('') + '</div>' :
+        '<div class="tbl-wrap"><table class="tbl pen-tbl"><thead><tr><th>Employee</th><th>Shift</th><th>In</th><th>Out</th><th>Worked</th><th>Status</th><th>Automatic</th><th>Given by hand</th><th>Note</th><th class="num">Total</th></tr></thead><tbody>' +
+        list.map(function (o) { return rowHtml(o.r, o.i); }).join('') + '</tbody></table></div>')) +
+        '<div class="sp"></div>';
+      $$('[data-tg]', b).forEach(function (t) {
+        t.onclick = function () {
+          var i = +t.dataset.i, rid = t.dataset.tg, e = edit(i);
+          e.on[rid] = !e.on[rid]; t.classList.toggle('on', e.on[rid]); dirty(i);
+        };
+      });
+      $$('[data-nt]', b).forEach(function (n) { n.oninput = function () { var i = +n.dataset.nt; edit(i).notes = n.value; dirty(i); }; });
+      $$('[data-more]', b).forEach(function (m) { m.onclick = function () { var i = +m.dataset.more; openRows[i] = !openRows[i]; m.closest('.pen-cell').classList.toggle('open', !!openRows[i]); m.innerHTML = openRows[i] ? 'Done' : icon('add', 'tiny') + ' Give…'; }; });
+      bar();
+    }
+    function mineOn(r) { var o = {}; r.applied.forEach(function (a) { if (a.mine) o[a.ruleId] = true; }); return o; }
+    function edit(i) {
+      if (!ed[i]) { var r = B.rows[i], mine = r.applied.filter(function (a) { return a.mine; }); ed[i] = { on: mineOn(r), notes: mine.length ? mine[0].notes : '' }; }
+      return ed[i];
+    }
+    function dirty(i) { var tr = $('[data-ri="' + i + '"]', x); if (tr) tr.classList.add('dirty'); ed[i].dirty = true; bar(); }
+    function chipsHtml(r, i) {
+      var e = ed[i], on = e ? e.on : mineOn(r);
+      var locked = r.applied.filter(function (a) { return !a.mine; });
+      var cat = rulesFor(r.groupKey);
+      var extra = r.applied.filter(function (a) { return a.mine && !cat.some(function (c) { return c.ruleId === a.ruleId; }); });
+      var tg = cat.filter(function (c) { return !locked.some(function (a) { return a.ruleId === c.ruleId; }); }).map(function (c) {
+        return '<span class="tog' + (on[c.ruleId] ? ' on' : '') + '" data-tg="' + h(c.ruleId) + '" data-i="' + i + '">' + h(c.label) + ' · ' + money(c.amount) + '</span>';
+      }).join('') + extra.map(function (a) {
+        return '<span class="tog' + (on[a.ruleId] ? ' on' : '') + '" data-tg="' + h(a.ruleId) + '" data-i="' + i + '">' + h(a.label) + ' · ' + money(a.amount) + '</span>';
+      }).join('') + locked.map(function (a) {
+        return '<span class="tog on" style="cursor:default;opacity:.85" title="Given by ' + h(a.by) + (a.notes ? ' — ' + h(a.notes) : '') + '">' + icon('lock', 'tiny') + ' ' + h(a.label) + ' · ' + money(a.amount) + '</span>';
+      }).join('');
+      return tg ? tg + '<span class="tog pen-more" data-more="' + i + '">' + (openRows[i] ? 'Done' : icon('add', 'tiny') + ' Give…') + '</span>' : '<span class="small muted">No manual penalty type</span>';
+    }
+    function cardHtml(r, i) {
+      var e = ed[i], mineNote = r.applied.filter(function (a) { return a.mine; })[0], late = [];
+      if (r.lateInMin > 0) late.push('late ' + r.lateInMin + 'm'); if (r.earlyOutMin > 0) late.push('early ' + r.earlyOutMin + 'm'); if (r.excessBreakMin > 0) late.push('break +' + r.excessBreakMin + 'm');
+      var punches = [r.shift, (r.punchIn === '-' ? '—' : r.punchIn) + ' → ' + (r.punchOut === '-' ? '—' : r.punchOut), r.workedText === '-' ? '' : r.workedText].filter(Boolean).join(' · ');
+      return '<div class="li pen-card' + (e && e.dirty ? ' dirty' : '') + '" data-ri="' + i + '"><div class="row"><div class="grow"><div class="b">' + h(r.name) + '</div><div class="tiny muted">' + h(r.employeeId + ' · ' + r.designation) + '</div></div>' +
+        (r.status ? statusChip(r.status) : '') + (r.total > 0 ? '<b style="color:var(--red)">' + money(r.total) + '</b>' : '') + '</div>' +
+        '<div class="small muted" style="margin-top:4px">' + h(punches) + (late.length ? ' <span style="color:var(--orange)">· ' + h(late.join(' · ')) + '</span>' : '') + '</div>' +
+        (r.auto > 0 ? '<div class="small" style="margin-top:4px"><b style="color:var(--red)">' + money(r.auto) + '</b> <span class="muted">' + h(r.autoLines.map(function (l) { return l.label; }).join(', ')) + '</span></div>' : '') +
+        '<div class="pen-cell' + (openRows[i] ? ' open' : '') + '" style="margin-top:6px">' + chipsHtml(r, i) + '</div>' +
+        '<input class="inp sm mt" style="margin-top:6px" data-nt="' + i + '" placeholder="Note" value="' + h(e ? e.notes : (mineNote ? mineNote.notes : '')) + '"></div>';
+    }
+    function rowHtml(r, i) {
+      var e = ed[i], mineNote = r.applied.filter(function (a) { return a.mine; })[0];
+      var late = [];
+      if (r.lateInMin > 0) late.push('late ' + r.lateInMin + 'm'); if (r.earlyOutMin > 0) late.push('early ' + r.earlyOutMin + 'm');
+      if (r.excessBreakMin > 0) late.push('break +' + r.excessBreakMin + 'm');
+      return '<tr data-ri="' + i + '"' + (e && e.dirty ? ' class="dirty"' : '') + '><td><div class="b nowrap">' + h(r.name) + '</div><div class="small muted">' + h(r.employeeId) + ' · ' + h(r.designation) +
+        (M.wide || M.outlets.length > 1 ? ' · ' + h(r.group) : '') + '</div></td>' +
+        '<td class="small">' + h(r.shift || '—') + '</td><td class="nowrap">' + h(r.punchIn === '-' ? '—' : r.punchIn) + '</td><td class="nowrap">' + h(r.punchOut === '-' ? '—' : r.punchOut) + '</td>' +
+        '<td class="nowrap">' + h(r.workedText === '-' ? '—' : r.workedText) + (late.length ? '<div class="tiny" style="color:var(--orange)">' + h(late.join(' · ')) + '</div>' : '') + '</td>' +
+        '<td>' + (r.status ? statusChip(r.status) : '<span class="muted small">—</span>') + '</td>' +
+        '<td class="wrap">' + (r.auto > 0 ? '<b style="color:var(--red)">' + money(r.auto) + '</b><div class="tiny muted">' + h(r.autoLines.map(function (l) { return l.label; }).join(', ')) + '</div>' : '<span class="muted small">—</span>') + '</td>' +
+        '<td class="wrap pen-cell' + (openRows[i] ? ' open' : '') + '" style="min-width:190px">' + chipsHtml(r, i) + '</td>' +
+        '<td><input class="inp sm" data-nt="' + i + '" placeholder="Note" value="' + h(e ? e.notes : (mineNote ? mineNote.notes : '')) + '" style="min-width:120px"></td>' +
+        '<td class="num b">' + (r.total > 0 ? money(r.total) : '—') + '</td></tr>';
+    }
+    function bar() {
+      var n = Object.keys(ed).filter(function (i) { return ed[i].dirty; }).length, old = $('.sticky-bar', x);
+      if (!n) { if (old) old.remove(); return; }
+      if (!old) {
+        old = document.createElement('div'); old.className = 'sticky-bar';
+        old.innerHTML = '<div class="grow" data-bn></div><button class="btn sm ghost" data-undo style="background:#fff;color:var(--brown)">Undo</button><button class="btn" data-save>' + icon('save') + 'Save</button>';
+        x.appendChild(old);
+        $('[data-undo]', old).onclick = function () { ed = {}; old.remove(); paint(); };
+        $('[data-save]', old).onclick = function () { save(this); };
+      }
+      $('[data-bn]', old).textContent = n + ' person' + (n > 1 ? 's' : '') + ' changed';
+    }
+    function save(btn) {
+      var rows = Object.keys(ed).filter(function (i) { return ed[i].dirty; }).map(function (i) {
+        var r = B.rows[+i], e = ed[i];
+        return { employeeId: r.employeeId, notes: e.notes || '', ruleIds: Object.keys(e.on).filter(function (k) { return e.on[k]; }) };
+      });
+      busy(btn, true, 'Saving…');
+      api('pen.save', { date: st.date, rows: rows }).then(function (r) { toast(r.message, 'ok'); boardTab(x); })
+        .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+    }
+  }
+
+  /* ---------- given by hand ---------- */
+  function chargesTab(x) {
+    x.innerHTML = '<div class="card"><div class="filters"><span class="small muted">From</span><input type="date" class="inp sm" data-f value="' + h(st.from) + '" max="' + h(M.today) + '">' +
+      '<span class="small muted">to</span><input type="date" class="inp sm" data-t value="' + h(st.to) + '" max="' + h(M.today) + '">' +
+      '<input class="inp sm" data-q placeholder="Search…" style="width:160px"><span class="grow"></span>' + penDl() +
+      '<button class="btn sm red" data-add>' + icon('add') + 'Give a penalty</button></div></div><div data-cb class="mt">' + loadingHtml() + '</div>';
+    var C = null;
+    $('[data-f]', x).onchange = function () { st.from = this.value; chargesTab(x); };
+    $('[data-t]', x).onchange = function () { st.to = this.value; chargesTab(x); };
+    $('[data-add]', x).onclick = function () { giveModal({ date: st.date }, function () { chargesTab(x); }); };
+    bindDl(x, 'charges');
+    $('[data-q]', x).oninput = debounce(function () { paint(); }, 150);
+    api('pen.charges', { from: st.from, to: st.to }).then(function (d) { C = d; paint(); }).catch(function (e) { $('[data-cb]', x).innerHTML = errHtml(e); });
+    function paint() {
+      var q = val('[data-q]', x).toLowerCase(), b = $('[data-cb]', x);
+      var list = C.entries.filter(function (c) { return !q || (c.name + ' ' + c.employeeId + ' ' + c.penaltyType + ' ' + c.addedBy + ' ' + c.notes).toLowerCase().indexOf(q) >= 0; });
+      b.innerHTML = '<div class="row mb"><b>' + list.length + ' penalt' + (list.length === 1 ? 'y' : 'ies') + '</b><span class="muted">·</span><b style="color:var(--red)">' +
+        money(list.reduce(function (t, c) { return t + (c.active ? c.amount : 0); }, 0)) + '</b></div>' +
+        (list.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Employee</th><th>Penalty</th><th class="num">Amount</th><th>Note</th><th>Given by</th><th></th></tr></thead><tbody>' +
+          list.map(function (c) {
+            var i = C.entries.indexOf(c);
+            return '<tr' + (c.active ? '' : ' style="opacity:.55"') + '><td class="nowrap">' + h(c.date) + '</td><td><div class="b">' + h(c.name || c.employeeId) + '</div><div class="small muted">' + h(c.employeeId) + (c.group ? ' · ' + h(c.group) : '') + '</div></td>' +
+              '<td>' + h(c.penaltyType) + (c.active ? '' : ' ' + chip('Off', 'grey')) + '</td><td class="num b">' + money(c.amount) + '</td><td class="small wrap">' + h(c.notes) + '</td>' +
+              '<td class="small">' + h(c.addedBy) + '<div class="muted">' + h(c.addedAt) + '</div></td>' +
+              '<td>' + (c.canRemove ? '<button class="icon-btn" data-rm="' + i + '" title="Take back">' + icon('delete') + '</button>' : icon('lock', 'tiny')) + '</td></tr>';
+          }).join('') + '</tbody></table></div>' : '<div class="card">' + emptyHtml('money_off', 'No penalty given by hand in these dates.') + '</div>');
+      $$('[data-rm]', b).forEach(function (bt) {
+        bt.onclick = function () {
+          var c = C.entries[+bt.dataset.rm];
+          confirmBox('Take back this penalty?', h(c.penaltyType) + ' · <b>' + money(c.amount) + '</b> for ' + h(c.name) + ' on ' + h(c.date) + '.', 'Take back', true).then(function (ok) {
+            if (!ok) return;
+            api('pen.remove', { entryId: c.entryId }).then(function (r) { toast(r.message, 'ok'); chargesTab(x); }).catch(function (e) { toast(e.message, 'bad'); });
+          });
+        };
+      });
+    }
+  }
+  function giveModal(pre, done) {
+    var people = M.employees.filter(function (e) { return e.penaltyOn; });
+    if (!people.length) return toast('Penalties are switched off for these locations.', 'bad');
+    if (!M.catalog.length) return toast('No manual penalty type is set up yet — HR adds them in Payroll ▸ Rules ▸ Penalty rules (Rule Type MANUAL).', 'bad');
+    modal({ title: 'Give a penalty', body:
+      '<div class="field"><label>Employee *</label><input class="inp sm" data-es placeholder="Search name / ID…" style="margin-bottom:6px">' +
+      '<select class="inp" data-emp size="6" style="min-height:150px">' + people.map(function (e) {
+        return '<option value="' + h(e.employeeId) + '">' + h(e.name) + ' · ' + h(e.employeeId) + ' · ' + h(e.designation) + (M.wide ? ' · ' + h(e.group) : '') + '</option>'; }).join('') + '</select></div>' +
+      '<div class="form-grid"><div class="field"><label>Date *</label><input type="date" class="inp" data-dt value="' + h(pre.date && pre.date <= M.today ? pre.date : M.today) + '" max="' + h(M.today) + '"></div>' +
+      '<div class="field"><label>Penalty *</label><select class="inp" data-rule><option value="">Pick the employee first</option></select></div>' +
+      '<div class="field"><label>Amount (₹)</label><input class="inp" data-amt inputmode="decimal"' + (M.canAmount ? '' : ' readonly style="background:#FBF6EE"') + '></div>' +
+      '<div class="field"><label>Note</label><input class="inp" data-nt placeholder="What happened?"></div></div>' +
+      (M.canAmount ? '' : '<div class="small muted">The amount is fixed by HR for each penalty type.</div>'),
+      onOpen: function (m) {
+        var sel = $('[data-emp]', m), rs = $('[data-rule]', m);
+        $('[data-es]', m).oninput = function () {
+          var q = this.value.toLowerCase();
+          $$('option', sel).forEach(function (o) { o.hidden = q && o.textContent.toLowerCase().indexOf(q) < 0; });
+        };
+        sel.onchange = function () {
+          var e = people.filter(function (p) { return p.employeeId === sel.value; })[0]; if (!e) return;
+          var list = rulesFor(e.groupKey);
+          rs.innerHTML = list.length ? list.map(function (c) { return '<option value="' + h(c.ruleId) + '" data-amt="' + c.amount + '">' + h(c.label) + ' · ' + money(c.amount) + '</option>'; }).join('') : '<option value="">None for ' + h(e.group) + '</option>';
+          rs.onchange();
+        };
+        rs.onchange = function () { var o = rs.options[rs.selectedIndex]; $('input[data-amt]', m).value = o && o.dataset.amt ? o.dataset.amt : ''; };
+      },
+      actions: [{ label: 'Cancel', cls: 'ghost' }, { label: icon('gavel') + 'Give penalty', cls: 'red', click: function (close, m, btn) {
+        if (!val('[data-emp]', m)) return toast('Pick the employee.', 'bad');
+        if (!val('[data-rule]', m)) return toast('Pick the penalty.', 'bad');
+        busy(btn, true);
+        api('pen.add', { employeeId: val('[data-emp]', m), date: val('[data-dt]', m), ruleId: val('[data-rule]', m), amount: M.canAmount ? val('input[data-amt]', m) : '', notes: val('[data-nt]', m) })
+          .then(function (r) { close(); toast(r.message, 'ok'); if (done) done(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+      } }] });
+  }
+
+  /* ---------- month summary ---------- */
+  function summaryTab(x) {
+    var now = new Date(), lmA = isoOf(new Date(now.getFullYear(), now.getMonth() - 1, 1)), lmB = isoOf(new Date(now.getFullYear(), now.getMonth(), 0));
+    x.innerHTML = '<div class="card"><div class="filters"><span class="small muted">From</span><input type="date" class="inp sm" data-f value="' + h(st.from) + '" max="' + h(M.today) + '">' +
+      '<span class="small muted">to</span><input type="date" class="inp sm" data-t value="' + h(st.to) + '" max="' + h(M.today) + '">' +
+      '<span class="qf" data-m="this">This month</span><span class="qf" data-m="last">Last month</span>' + scopeSel() +
+      '<input class="inp sm" data-q placeholder="Search…" style="width:150px"><span class="grow"></span>' + penDl() + '</div></div>' +
+      '<div data-sb class="mt">' + loadingHtml() + '</div>';
+    var R = null;
+    $('[data-f]', x).onchange = function () { st.from = this.value; summaryTab(x); };
+    $('[data-t]', x).onchange = function () { st.to = this.value; summaryTab(x); };
+    $$('[data-m]', x).forEach(function (q) {
+      q.classList.toggle('on', q.dataset.m === 'this' ? (st.from === M.monthStart && st.to === M.today) : (st.from === lmA && st.to === lmB));
+      q.onclick = function () { if (q.dataset.m === 'this') { st.from = M.monthStart; st.to = M.today; } else { st.from = lmA; st.to = lmB; } summaryTab(x); };
+    });
+    bindScope(x, function () { summaryTab(x); });
+    $('[data-q]', x).oninput = debounce(function () { paint(); }, 150);
+    bindDl(x, 'summary');
+    api('pen.summary', { from: st.from, to: st.to, group: st.group, outletId: st.outletId }).then(function (d) { R = d; paint(); })
+      .catch(function (e) { $('[data-sb]', x).innerHTML = errHtml(e); });
+    function paint() {
+      var q = val('[data-q]', x).toLowerCase(), b = $('[data-sb]', x), t = R.totals;
+      var list = R.rows.filter(function (r) { return !q || (r.name + ' ' + r.employeeId + ' ' + r.group).toLowerCase().indexOf(q) >= 0; });
+      b.innerHTML = '<div class="kpis mb"><div class="kpi"><div class="l">People with a penalty</div><div class="v">' + t.people + '</div><div class="s">' + h(R.fromText + ' – ' + R.toText) + '</div></div>' +
+        '<div class="kpi red"><div class="l">Total</div><div class="v">' + money(t.total) + '</div></div>' +
+        '<div class="kpi orange"><div class="l">Automatic</div><div class="v">' + money(t.auto) + '</div></div>' +
+        '<div class="kpi violet"><div class="l">Given by hand</div><div class="v">' + money(t.manual) + '</div></div></div>' +
+        '<div class="small muted mb">' + R.uploadedDays + ' day(s) of punches uploaded in these dates. Salary preparation deducts these totals.</div>' +
+        (list.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Employee</th><th>Location</th><th class="num">Days</th><th class="num">Automatic</th><th class="num">By hand</th><th class="num">Total</th></tr></thead><tbody>' +
+          list.map(function (r) {
+            return '<tr class="click" data-r="' + R.rows.indexOf(r) + '"><td><div class="b">' + h(r.name) + '</div><div class="small muted">' + h(r.employeeId) + ' · ' + h(r.designation) + '</div></td>' +
+              '<td class="small">' + h(r.group) + '</td><td class="num">' + r.days + (r.pending ? ' <span class="tiny muted" title="Given for a day not uploaded yet">+</span>' : '') + '</td>' +
+              '<td class="num">' + (r.auto ? money(r.auto) : '—') + '</td><td class="num">' + (r.manual ? money(r.manual) : '—') + '</td><td class="num b" style="color:var(--red)">' + money(r.total) + '</td></tr>';
+          }).join('') + '</tbody><tfoot><tr><td colspan="3">Total</td><td class="num">' + money(t.auto) + '</td><td class="num">' + money(t.manual) + '</td><td class="num">' + money(t.total) + '</td></tr></tfoot></table></div>'
+          : '<div class="card">' + emptyHtml('sentiment_satisfied', 'No penalty in these dates.') + '</div>');
+      $$('[data-r]', b).forEach(function (tr) {
+        tr.onclick = function () {
+          var r = R.rows[+tr.dataset.r];
+          modal({ title: r.name + ' · ' + money(r.total), wide: true, body: '<div class="small muted mb">' + h(r.employeeId + ' · ' + r.designation + ' · ' + r.group) + '</div>' +
+            tableHtml([{ t: 'Date', f: function (l) { return '<span class="nowrap">' + h(l.date) + '</span>'; } }, { t: 'Status', f: function (l) { return statusChip(l.status); } },
+              { t: 'Why', cls: 'wrap', f: function (l) { return l.items.map(function (i) { return h(i.label) + (i.manual ? ' <span class="chip mini violet">by hand</span>' : '') + (i.notes ? ' <span class="muted small">(' + h(i.notes) + ')</span>' : '') + ' · ' + money(i.amount); }).join('<br>'); } },
+              { t: 'Amount', cls: 'num', f: function (l) { return '<b>' + money(l.amount) + '</b>'; } }], r.lines) });
+        };
+      });
+    }
+  }
+
+  /* ---------- rules ---------- */
+  function rulesTab(x) {
+    var by = {}, order = [];
+    M.rules.filter(function (r) { return r.type !== 'MANUAL'; }).forEach(function (r) { if (!by[r.group]) { by[r.group] = []; order.push(r.group); } by[r.group].push(r); });
+    x.innerHTML = (M.canConfig ? '<div class="row mb"><span class="grow"></span>' +
+        '<button class="btn sm ghost" data-edit>' + icon('tune') + 'Edit rules</button></div>' : '') +
+      '<div class="card"><h3>' + icon('location_on') + ' Where penalties apply</h3><div class="row gap6">' + M.groups.map(function (g) {
+        return chip(g.groupName + (g.applyPenalty ? ' · on' : ' · off'), g.applyPenalty ? 'green' : 'grey'); }).join('') + '</div>' +
+        (M.maxPerDay ? '<div class="small muted mt">At most ' + money(M.maxPerDay) + ' per person per day.</div>' : '') +
+        '<div class="small muted" style="margin-top:6px">Break allowed: ' + num(M.allowedBreak) + ' minutes a day.</div></div>' +
+      (order.length ? order.map(function (g) {
+        return '<div class="section-title">Automatic · ' + h(g) + '</div>' + tableHtml([
+          { t: 'Penalty', f: function (r) { return '<b>' + h(r.label) + '</b>'; } },
+          { t: 'When', cls: 'wrap', f: function (r) { return h(r.typeText) + (r.unit ? ' — ' + num(r.from) + (r.to ? ' to ' + num(r.to) : '+') + ' ' + h(r.unit) : ''); } },
+          { t: 'Amount', f: function (r) { return h(amountText(r)); } },
+          { t: 'Shift', f: function (r) { return h(r.shift || 'All'); } },
+          { t: 'Charged from', f: function (r) { return h(r.since || 'Always'); } }], by[g]);
+      }).join('') : '<div class="card mt">' + emptyHtml('rule', 'No automatic penalty rule is active.') + '</div>') +
+      '<div class="section-title">Given by hand</div>' + (M.catalog.length ? '<div class="card"><div class="row gap6">' + M.catalog.map(function (c) {
+        return c.label + ' · ' + money(c.amount); }).filter(function (t, i, all) { return all.indexOf(t) === i; }).map(function (t) { return chip(t, 'violet'); }).join('') + '</div></div>' : '<div class="card">' + emptyHtml('rule', 'No manual penalty type yet.') + '</div>');
+    if ($('[data-edit]', x)) $('[data-edit]', x).onclick = function () { go('hr_attendance', { view: 'rules', back: has('payroll') ? 'payroll' : '' }); };
+  }
+}
+</script>

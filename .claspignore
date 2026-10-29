@@ -1,0 +1,12 @@
+_extras/**
+_backup/**
+_deploy/**
+netlify/**
+node_modules/**
+.netlify/**
+*.md
+*.mjs
+*.zip
+web/**
+vercel.json
+CG_SSO.gs

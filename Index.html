@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="theme-color" content="#FBF6EE">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,450,0..1,0&display=block" rel="stylesheet">
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <div id="boot"><div class="spinner"></div></div>
+  <div id="app"></div>
+  <div id="toasts"></div>
+  <script>var CG = <?!= JSON.stringify({ name: appName, logo: logo, mark: mark, version: version, uiv: uiv, link: link }) ?>;</script>
+  <?!= include('Script'); ?>
+  <?!= include('ViewsWork'); ?>
+  <script>boot();</script>
+</body>
+</html>

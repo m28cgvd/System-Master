@@ -1,0 +1,237 @@
+<script>
+/* =====================================================================
+   My Space: My Profile · Leave · Advance · Reimbursement · My Apps · Documents
+   (everyone — including people with only one checklist and nothing else)
+   ===================================================================== */
+
+/* ---------------- MY PROFILE (no salary) ---------------- */
+V.profile = function (el) {
+  el.innerHTML = pageHead('My Profile', '') + '<div id="pb">' + loadingHtml() + '</div>';
+  live('prof.me', {}, function (d) {
+    var b = $('#pb', el);
+    b.innerHTML = '<div class="card"><div class="profile-head"><div class="avatar lg">' + h(initials(d.name)) + '</div><div class="grow"><h2 style="margin:0">' + h(d.name) + '</h2>' +
+      '<div class="muted">' + h(d.designation) + (d.location ? ' · ' + h(d.location) : '') + '</div>' +
+      '<div class="row gap6 mt" style="margin-top:8px">' + chip(d.empId, 'brown') + chip('Login ' + d.login.uid, 'grey') + chip(d.login.role, 'violet') + '</div></div></div></div>' +
+      '<div class="grid g2 mt">' + d.groups.map(function (g) {
+        return g.rows.length ? '<div class="card"><h3>' + icon(g.icon) + ' ' + h(g.title) + '</h3><div class="kv">' + g.rows.map(function (r) { return '<b>' + h(r[0]) + '</b><span>' + h(r[1]) + '</span>'; }).join('') + '</div></div>' : '';
+      }).join('') +
+      '<div class="card"><h3>' + icon('folder') + ' Documents on file</h3>' + (d.docs.length ? '<div class="stack">' + d.docs.map(function (x, i) {
+        return '<div class="row"><span class="grow">' + icon('description') + ' ' + h(x.label) + '</span><button class="btn sm soft" data-doc="' + i + '">' + icon('visibility') + 'View</button></div>';
+      }).join('') + '</div>' : emptyHtml('folder_off', 'No document on file yet.')) + '</div></div>';
+    $$('[data-doc]', b).forEach(function (x) { x.onclick = function () { var dc = d.docs[+x.dataset.doc]; openFileApi('prof.doc', { col: dc.col, i: dc.i }, dc.label); }; });
+  }, { busy: true }).catch(function (e) { $('#pb', el).innerHTML = errHtml(e); });
+};
+
+/* ---------------- LEAVE · ADVANCE · REIMBURSEMENT ---------------- */
+V.my_requests = function (el, p) {
+  var tab = p.tab || 'track';
+  el.innerHTML = pageHead('Leave · Advance · Reimbursement', '') +
+    tabsHtml([['track', 'My requests'], ['leave', 'Apply leave'], ['advance', 'Request advance'], ['reimb', 'Claim reimbursement']], tab) + '<div id="rqb"></div>';
+  bindTabs(el, function (t) { tab = t; show(); });
+  function show() {
+    var b = $('#rqb', el);
+    b.dataset.tab = tab;
+    if (tab === 'track') return reqTrack(b);
+    b.innerHTML = loadingHtml();
+    var t = tab;
+    reqMetaNow().then(function (m) {
+      if (b.dataset.tab !== t) return;                    // the person switched tabs meanwhile
+      if (tab === 'leave') reqLeaveForm(b, m, function () { tab = 'track'; go('my_requests', { tab: 'track' }); });
+      else if (tab === 'advance') reqAdvanceForm(b, m, function () { go('my_requests', { tab: 'track' }); });
+      else reqReimbForm(b, m, function () { go('my_requests', { tab: 'track' }); });
+    }).catch(function (e) { b.innerHTML = errHtml(e); });
+  }
+  show();
+};
+function tlSteps(steps) {
+  return '<div class="timeline">' + steps.map(function (s, i) {
+    var ic = s[1] === 'done' ? 'check' : s[1] === 'now' ? 'hourglass_top' : s[1] === 'no' ? 'close' : s[1] === 'skip' ? 'remove' : 'more_horiz';
+    return (i ? '<span class="tl-line"></span>' : '') + '<span class="tl-step ' + s[1] + '"><span class="tl-dot">' + icon(ic) + '</span>' + h(s[0]) + '</span>';
+  }).join('') + '</div>';
+}
+function stepOf(v, auto) { v = String(v || '').toUpperCase(); if (auto) return 'done'; return v === 'APPROVED' || v === 'PAID' ? 'done' : v === 'PENDING' ? 'now' : v === 'REJECTED' ? 'no' : v === '-' ? 'skip' : ''; }
+function reqTrack(b) {
+  b.innerHTML = loadingHtml();
+  var mon = S.cache.reqMonth || monthLabelNow();                 // this month first — any other month or all of them one tap away
+  live('req.mine', {}, function (d) {
+    var months = [];
+    [d.advances, d.leaves, d.reimbursements].forEach(function (L) { L.forEach(function (x) { if (x.month && months.indexOf(x.month) < 0) months.push(x.month); }); });
+    var cur = monthLabelNow(); if (months.indexOf(cur) < 0) months.unshift(cur);
+    months.sort(function (x, y) { return new Date('1 ' + y) - new Date('1 ' + x); });
+    function pick(L) { return mon === 'all' ? L : L.filter(function (x) { return x.month === mon; }); }
+    var A = pick(d.advances), Lv = pick(d.leaves), R = pick(d.reimbursements);
+    var adv = A.map(function (a) {
+      return '<div class="li" data-sum="' + h(money(a.amount || a.requested) + ' · ' + (a.stageText || '') + ' · ' + (a.applied || '')) + '"><div class="top"><div class="grow"><div class="title">' + money(a.amount || a.requested) + ' <span class="small muted">advance</span></div>' +
+        '<div class="small muted">Requested ' + money(a.requested) + ' · ' + h(a.applied) + '</div></div><div class="right">' + statusChip(a.stageText) + '</div></div>' +
+        (a.purpose ? '<div class="small" style="margin-top:6px">' + h(a.purpose) + '</div>' : '') +
+        '<div class="mt">' + advStrip(a) + '</div></div>';
+    });
+    var lv = Lv.map(function (l) {
+      var steps = [['Applied', 'done']];
+      if (l.l1 && l.l1 !== '-') steps.push(['Outlet Incharge', stepOf(l.l1)]);
+      steps.push(['HR', stepOf(l.final || 'PENDING')]);
+      return '<div class="li" data-sum="' + h(num(l.days) + ' day(s) · ' + (l.reason || '') ) + '"><div class="top"><div class="grow"><div class="title">' + h(l.from) + (l.to !== l.from ? ' – ' + h(l.to) : '') + '</div>' +
+        '<div class="small muted">' + num(l.days) + ' day(s) · applied ' + h(l.applied) + '</div></div><div class="right">' + statusChip(l.stageText) + '</div></div><div class="mt">' + tlSteps(steps) + '</div>' +
+        '<div class="small mt">' + h(l.reason) + '</div>' + (l.remarks ? '<div class="small muted">' + h(l.remarks) + '</div>' : '') + '</div>';
+    });
+    var rb = R.map(function (r) {
+      var i = d.reimbursements.indexOf(r);
+      return '<div class="li" data-sum="' + h([r.category, r.date, r.purpose || r.vendor].filter(Boolean).join(' · ')) + '"><div class="top"><div class="grow"><div class="title">' + money(r.amount) + ' <span class="small muted">' + h(r.category || '') + '</span></div>' +
+        '<div class="small muted">' + h(r.date) + ' · applied ' + h(r.applied) + '</div></div><div class="right">' + statusChip(r.status) + '</div></div>' +
+        '<div class="mt">' + tlSteps([['Claimed', 'done'], ['Approval', stepOf(r.status)]]) + '</div>' +
+        '<div class="row mt small"><span class="grow">' + h(r.purpose || r.vendor || '') + '</span>' + (r.bill ? '<button class="btn sm ghost" data-bill="' + i + '">' + icon('receipt') + 'Bill</button>' : '') + '</div>' +
+        (r.remarks ? '<div class="small muted">' + h(r.remarks) + '</div>' : '') + '</div>';
+    });
+    var what = mon === 'all' ? 'yet' : 'in ' + mon;
+    b.innerHTML = (d.errors.length ? '<div class="warn mb">' + h(d.errors.join(' · ')) + '</div>' : '') +
+      '<div class="row gap6 mb" style="flex-wrap:wrap">' + months.map(function (m) { return '<button class="fchip' + (m === mon ? ' on' : '') + '" data-mon="' + h(m) + '">' + h(m) + '</button>'; }).join('') +
+      '<button class="fchip' + (mon === 'all' ? ' on' : '') + '" data-mon="all">All</button></div>' +
+      '<div class="section-title" style="margin-top:4px">Advance (' + adv.length + ')</div>' + (adv.length ? '<div class="list">' + adv.join('') + '</div>' : '<div class="card">' + emptyHtml('payments', 'No advance ' + what + '.') + '</div>') +
+      '<div class="section-title">Leave (' + lv.length + ')</div>' + (lv.length ? '<div class="list">' + lv.join('') + '</div>' : '<div class="card">' + emptyHtml('event_available', 'No leave ' + what + '.') + '</div>') +
+      '<div class="section-title">Reimbursement (' + rb.length + ')</div>' + (rb.length ? '<div class="list">' + rb.join('') + '</div>' : '<div class="card">' + emptyHtml('request_quote', 'No reimbursement ' + what + '.') + '</div>');
+    foldCards(b);
+    $$('[data-mon]', b).forEach(function (x) { x.onclick = function () { S.cache.reqMonth = x.dataset.mon; mon = x.dataset.mon; reqTrack(b); }; });
+    $$('[data-go]', b).forEach(function (x) { x.onclick = function () { go('my_requests', { tab: x.dataset.go }); }; });
+    $$('[data-bill]', b).forEach(function (x) { x.onclick = function (e) { e.stopPropagation(); var r = d.reimbursements[+x.dataset.bill]; openFileApi('req.file', { sheet: r.sheet, row: r.row, empId: r.empId, which: 'bill' }, 'Bill'); }; });
+  }, { maxAge: 5000, alive: function () { return b.dataset.tab === 'track'; } }).catch(function (e) { b.innerHTML = errHtml(e); });
+}
+/** A request just sent: the server sends the fresh list with its answer — My requests opens with it at once. */
+function reqSent(r) { if (r && r.mine) dcSet(dcKey('req.mine', {}), r.mine); else dcDel('req.mine', {}); }
+function reqWho(m) {
+  return '<div class="card mb"><div class="row"><div class="avatar">' + h(initials(m.emp.name)) + '</div><div class="grow"><div class="b">' + h(m.emp.name) + ' <span class="small muted">' + h(m.emp.id) + '</span></div>' +
+    '<div class="small muted">' + h(m.emp.designation) + ' · ' + h(m.emp.department) + ' · ' + h(m.emp.location) + '</div></div></div></div>';
+}
+function reqLeaveForm(b, m, done) {
+  b.innerHTML = reqWho(m) + '<div class="card"><h3>Apply leave / अवकाश आवेदन</h3>' +
+    '<div class="form-grid"><div class="field"><label>From / से *</label><input type="date" class="inp" id="lf" min="' + addDaysISO(m.today, -30) + '" value="' + m.today + '"></div>' +
+    '<div class="field"><label>To / तक *</label><input type="date" class="inp" id="lt" value="' + m.today + '"></div>' +
+    '<div class="field full"><label>Reason / कारण *</label><textarea class="inp" id="lr" placeholder="Why do you need leave?"></textarea></div></div>' +
+    '<div class="row"><span class="small muted grow" id="ldays"></span><span class="small muted">Goes to ' + h(m.leave.goesTo) + '</span></div>' +
+    '<div class="row mt"><span class="grow"></span><button class="btn green" id="lsend">' + icon('send') + 'Send request</button></div></div>';
+  function days() { var a = val('#lf', b), c = val('#lt', b); if (!a || !c) return; var n = Math.round((new Date(c) - new Date(a)) / 86400000) + 1; $('#ldays', b).textContent = n > 0 ? n + ' day(s)' : 'The last day is before the first day'; }
+  $('#lf', b).onchange = function () { if (val('#lt', b) < this.value) $('#lt', b).value = this.value; days(); };
+  $('#lt', b).onchange = days; days();
+  $('#lsend', b).onclick = function () {
+    var btn = this; busy(btn, true, 'Sending…');
+    api('req.leave', { from: val('#lf', b), to: val('#lt', b), reason: val('#lr', b) }).then(function (r) { toast(r.message, 'ok'); reqSent(r); done(); })
+      .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+  };
+}
+function reqAdvanceForm(b, m, done) {
+  b.innerHTML = reqWho(m) + '<div class="card"><h3>Request advance / अग्रिम राशि</h3>' +
+    '<div class="row gap6 mb" style="flex-wrap:wrap">' + chip('Up to ' + m.advance.pct + '% of earned salary', 'blue') + chip('Max ' + m.advance.days + ' days', 'blue') +
+    (m.advance.steps && m.advance.steps.length ? chip(m.advance.steps.join(' → '), 'grey') : chip(m.advance.goesTo, 'grey')) + '</div>' +
+    '<div class="form-grid"><div class="field"><label>Present days this month / उपस्थित दिन *</label><input class="inp" id="ad" inputmode="numeric" placeholder="e.g. 12"></div>' +
+    '<div class="field"><label>Maximum you can get</label><div class="inp" id="amax" style="display:flex;align-items:center;background:#FBF6EE">—</div></div>' +
+    '<div class="field"><label>Amount you need / राशि (₹) *</label><input class="inp" id="aa" inputmode="numeric"></div>' +
+    '<div class="field"><label>Purpose / उद्देश्य *</label><input class="inp" id="ap" placeholder="What is it for?"></div></div>' +
+    '<div class="row mt"><span class="grow"></span><button class="btn green" id="asend">' + icon('send') + 'Send request</button></div></div>';
+  var max = 0;
+  var prev = debounce(function () {
+    var dd = parseInt(val('#ad', b), 10);
+    if (!(dd > 0)) { $('#amax', b).textContent = '—'; return; }
+    $('#amax', b).textContent = '…';
+    api('req.preview', { days: dd }).then(function (r) { max = r.max; $('#amax', b).innerHTML = '<b>' + money(r.max) + '</b>&nbsp;<span class="small muted">(' + r.days + ' days)</span>'; if (!val('#aa', b)) $('#aa', b).value = r.max; })
+      .catch(function (e) { $('#amax', b).textContent = e.message; });
+  }, 400);
+  $('#ad', b).oninput = prev;
+  $('#asend', b).onclick = function () {
+    var amt = parseInt(val('#aa', b), 10);
+    if (max && amt > max) return toast('The amount is more than the maximum ' + money(max) + '.', 'bad');
+    var btn = this; busy(btn, true, 'Sending…');
+    api('req.advance', { days: val('#ad', b), amount: val('#aa', b), purpose: val('#ap', b) }).then(function (r) { toast(r.message, 'ok'); reqSent(r); done(); })
+      .catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+  };
+}
+function reqReimbForm(b, m, done) {
+  b.innerHTML = reqWho(m) + '<div class="card"><h3>Claim reimbursement / प्रतिपूर्ति</h3>' +
+    '<div class="form-grid"><div class="field"><label>Category *</label><select class="inp" id="rc"><option value="">Pick…</option>' + m.categories.map(function (c) { return '<option>' + h(c) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="field"><label>Expense date *</label><input type="date" class="inp" id="rd" max="' + m.today + '" value="' + m.today + '"></div>' +
+    '<div class="field"><label>Amount (₹) *</label><input class="inp" id="ra" inputmode="decimal"></div>' +
+    '<div class="field"><label>Paid how</label><select class="inp" id="rm">' + m.methods.map(function (x) { return '<option>' + h(x) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="field"><label>Vendor / shop</label><input class="inp" id="rv"></div>' +
+    '<div class="field"><label>Business purpose *</label><input class="inp" id="rp"></div>' +
+    '<div class="full" id="rbill"></div><div class="full mt" id="rdoc"></div>' +
+    '<label class="check full mt"><input type="checkbox" id="rdecl"> I certify that this expense is genuine and the bill is accurate.</label></div>' +
+    '<div class="row mt"><span class="grow"></span><button class="btn green" id="rsend">' + icon('send') + 'Submit claim</button></div></div>';
+  var bill = filePicker($('#rbill', b), 'reimb', { label: 'Bill / invoice / receipt', required: true });
+  var extra = filePicker($('#rdoc', b), 'reimb', { label: 'Any other document (optional)' });
+  $('#rsend', b).onclick = function () {
+    if (bill.busy() || extra.busy()) return toast('Wait for the upload to finish.');
+    if (!bill.get()) return toast('Attach the bill photo.', 'bad');
+    if (!$('#rdecl', b).checked) return toast('Please tick the declaration.', 'bad');
+    var btn = this; busy(btn, true, 'Submitting…');
+    api('req.reimb', { category: val('#rc', b), date: val('#rd', b), amount: val('#ra', b), method: val('#rm', b), vendor: val('#rv', b), purpose: val('#rp', b),
+      declaration: true, billFileId: bill.get().fileId, extraFileIds: extra.get() ? [extra.get().fileId] : [] })
+      .then(function (r) { toast(r.message, 'ok'); reqSent(r); done(); }).catch(function (e) { busy(btn, false); toast(e.message, 'bad'); });
+  };
+}
+
+/* ---------------- MY APPS ---------------- */
+var INSIDE_NAME = { my_requests: 'Leave · Advance · Reimbursement', approvals: 'Approvals', hr_attendance: 'Attendance', employees: 'Employees',
+  checklist: 'My Checklist', orders: 'Orders', production: 'Production Records', prod_entry: 'Production Entry', join: 'Joining form' };
+V.apps = function (el) {
+  el.innerHTML = pageHead('My Apps', '', '<input class="inp sm" id="aq" placeholder="Search…" style="width:200px" data-free>') + '<div id="apb">' + loadingHtml() + '</div>';
+  var d = null;
+  $('#aq', el).oninput = function () { if (d) render(); };
+  live('apps.mine', {}, function (x) { d = x; render(); }).catch(function (e) { $('#apb', el).innerHTML = errHtml(e); });
+  function render() {
+    var q = val('#aq', el).toLowerCase(), depts = {}, order = [];
+    d.apps.filter(function (a) { return !q || (a.name + ' ' + a.dept + ' ' + a.section + ' ' + a.type + ' ' + a.company).toLowerCase().indexOf(q) >= 0; }).forEach(function (a) {
+      if (!depts[a.dept]) { depts[a.dept] = {}; order.push(a.dept); }
+      (depts[a.dept][a.section] = depts[a.dept][a.section] || []).push(a);
+    });
+    $('#apb', el).innerHTML = (d.apps.some(function (a) { return a.inside; }) ? '<div class="okbox mb">' + icon('verified') + ' Apps marked <b>Inside One Login</b> open right here — no separate login.</div>' : '') +
+      (order.length ? order.map(function (g) {
+        return '<div class="dept-h">' + icon('apartment') + h(g) + '</div>' + Object.keys(depts[g]).map(function (sec) {
+          return '<div class="small muted b" style="margin:6px 0">' + h(sec) + '</div><div class="grid g3 mb">' + depts[g][sec].map(function (a) {
+            return '<div class="app-card"><div class="ic">' + icon(TYPE_ICON[a.type] || 'link') + '</div><div class="grow"><div class="nm">' + h(a.name) + '</div>' +
+              '<div class="row gap6" style="margin-top:4px">' + chip(a.type, 'grey') + (a.inside ? chip('Inside One Login', 'green') : '') + '</div>' +
+              (a.desc ? '<div class="small muted mt" style="margin-top:4px">' + h(a.desc) + '</div>' : '') +
+              (a.creds.length ? '<div class="row gap6" style="margin-top:6px">' + a.creds.map(function (c) { return '<button class="btn sm soft" data-cred="' + h(c.id) + '">' + icon('key') + h(c.login) + '</button>'; }).join('') + '</div>' : '') +
+              '<div class="row gap6" style="margin-top:8px">' + (a.inside ? '<button class="btn sm" data-in="' + h(a.id) + '">' + icon('login') + 'Open here</button>' : '') +
+              (a.oldHidden ? '' : '<button class="btn sm ' + (a.inside ? 'ghost' : '') + '" data-a="' + h(a.id) + '">' + icon('open_in_new') + (a.inside ? 'Old link' : 'Open') + '</button>') + '</div></div></div>';
+          }).join('') + '</div>';
+        }).join('');
+      }).join('') : '<div class="card">' + emptyHtml('apps', 'No app is shared with you yet.') + '</div>');
+    $$('[data-in]', el).forEach(function (bt) {
+      bt.onclick = function () {
+        var a = d.apps.filter(function (x) { return x.id === bt.dataset.in; })[0];
+        if (a.inside === 'join') { if (d.joinUrl) window.open(d.joinUrl, '_blank'); return; }
+        go(a.inside, {});
+      };
+    });
+    $$('[data-a]', el).forEach(function (bt) {
+      bt.onclick = function () {
+        var a = d.apps.filter(function (x) { return x.id === bt.dataset.a; })[0];
+        if (a.url) { window.open(a.url, '_blank'); api('apps.open', { id: a.id }).catch(function () {}); return; }
+        var w = window.open('', '_blank');
+        api('apps.open', { id: a.id }).then(function (r) { if (w) w.location = r.url; else window.open(r.url, '_blank'); }).catch(function (err) { if (w) w.close(); toast(err.message, 'bad'); });
+      };
+    });
+    $$('[data-cred]', el).forEach(function (bt) {
+      bt.onclick = function (e) {
+        e.stopPropagation();
+        api('apps.reveal', { id: bt.dataset.cred }).then(function (c) { credModal('Your login', c.login, c.password, c.notes); }).catch(function (err) { toast(err.message, 'bad'); });
+      };
+    });
+  }
+};
+
+/* ---------------- DOCUMENTS & PASSWORDS (shared with me) ---------------- */
+V.vault = function (el) {
+  el.innerHTML = pageHead('Documents & Passwords', '') + '<div id="vb">' + loadingHtml() + '</div>';
+  api('vault.mine').then(function (d) {
+    $('#vb', el).innerHTML = d.items.length ? '<div class="grid g3">' + d.items.map(function (it, i) {
+      return '<div class="card"><div class="row"><div class="ic ' + (it.type === 'Document' ? 'blue' : it.type === 'Note' ? 'orange' : 'violet') + '" style="width:40px;height:40px;border-radius:11px;display:grid;place-items:center">' +
+        icon(it.type === 'Document' ? 'description' : it.type === 'Note' ? 'sticky_note_2' : 'key') + '</div><div class="grow"><h3 style="margin:0">' + h(it.title) + '</h3><div class="small muted">' + h(it.category) + ' · ' + h(it.updated) + '</div></div></div>' +
+        (it.notes ? '<div class="small mt" style="white-space:pre-line">' + h(it.notes) + '</div>' : '') +
+        '<div class="row mt">' + (it.fileId ? '<button class="btn sm" data-f="' + i + '">' + icon('visibility') + 'Open</button>' : '') +
+        (it.login || it.hasPassword ? '<button class="btn sm soft" data-p="' + i + '">' + icon('key') + 'Show login</button>' : '') +
+        (it.url ? '<a class="btn sm ghost" href="' + h(it.url) + '" target="_blank">' + icon('open_in_new') + 'Link</a>' : '') + '</div></div>';
+    }).join('') + '</div>' : '<div class="card">' + emptyHtml('folder_shared', 'Nothing is shared with you yet.') + '</div>';
+    $$('[data-f]', el).forEach(function (b) { b.onclick = function () { var it = d.items[+b.dataset.f]; viewFile('vault', it.id, it.title); }; });
+    $$('[data-p]', el).forEach(function (b) { b.onclick = function () { var it = d.items[+b.dataset.p]; api('vault.reveal', { id: it.id }).then(function (c) { credModal(it.title, c.login, c.password); }).catch(function (e) { toast(e.message, 'bad'); }); }; });
+  }).catch(function (e) { $('#vb', el).innerHTML = errHtml(e); });
+};
+</script>
